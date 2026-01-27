@@ -1,0 +1,5 @@
+{
+  "name": "Process Flow Simulator",
+  "description": "A visual, node-based process simulation tool to model flow, bottlenecks, and efficiency.",
+  "requestFramePermissions": []
+}
