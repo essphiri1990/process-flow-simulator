@@ -1,6 +1,7 @@
 import React from 'react';
 import { useStore } from '../store';
-import { X, User, Box, FileText, Circle, Square, MousePointer2 } from 'lucide-react';
+import { X, User, Box, FileText, Circle, Square, Clock } from 'lucide-react';
+import { TIME_UNIT_PRESETS } from '../types';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -9,6 +10,8 @@ interface SettingsModalProps {
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const itemConfig = useStore((state) => state.itemConfig);
   const setItemConfig = useStore((state) => state.setItemConfig);
+  const timeUnit = useStore((state) => state.timeUnit);
+  const setTimeUnit = useStore((state) => state.setTimeUnit);
 
   const icons = [
     { id: 'none', label: 'None', icon: <Circle size={16} /> },
@@ -114,9 +117,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           {/* Preview */}
           <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
               <span className="text-sm font-medium text-slate-600">Preview Item</span>
-              <div 
+              <div
                   className={`w-10 h-10 shadow-md flex items-center justify-center text-white transition-all`}
-                  style={{ 
+                  style={{
                       backgroundColor: itemConfig.color,
                       borderRadius: itemConfig.shape === 'circle' ? '50%' : itemConfig.shape === 'rounded' ? '8px' : '0px'
                   }}
@@ -125,6 +128,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                   {itemConfig.icon === 'box' && <Box size={20} />}
                   {itemConfig.icon === 'file' && <FileText size={20} />}
               </div>
+          </div>
+
+          {/* Time Unit Configuration */}
+          <div>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <Clock size={14} />
+              Time Settings
+            </h3>
+
+            <div>
+              <label className="text-xs text-slate-400 font-bold mb-2 block">What does 1 tick represent?</label>
+              <div className="grid grid-cols-3 gap-2">
+                {Object.entries(TIME_UNIT_PRESETS).map(([key, preset]) => (
+                  <button
+                    key={key}
+                    onClick={() => setTimeUnit(key)}
+                    className={`p-2 rounded-lg border text-sm font-medium transition ${
+                      timeUnit === key
+                        ? 'bg-blue-50 border-blue-500 text-blue-700'
+                        : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    1 {preset.unitName}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-slate-400 mt-2">
+                This affects how VSM metrics are displayed (e.g., Lead Time in {TIME_UNIT_PRESETS[timeUnit]?.unitNamePlural || 'ticks'})
+              </p>
+            </div>
           </div>
 
         </div>

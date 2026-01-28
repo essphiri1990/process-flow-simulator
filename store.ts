@@ -9,7 +9,7 @@ import {
   applyEdgeChanges,
   MarkerType,
 } from 'reactflow';
-import { SimulationState, ProcessNode, StartNode, EndNode, AnnotationNode, AppNode, ProcessItem, ItemStatus, ProcessNodeData, HistoryEntry, ItemCounts } from './types';
+import { SimulationState, ProcessNode, StartNode, EndNode, AnnotationNode, AppNode, ProcessItem, ItemStatus, ProcessNodeData, HistoryEntry, ItemCounts, DURATION_PRESETS, SPEED_PRESETS } from './types';
 
 // Simple UUID generator
 const generateId = () => {
@@ -194,9 +194,45 @@ export const useStore = create<SimulationState>((set, get) => ({
   // Auto Injection (Master Switch)
   autoInjectionEnabled: false,
 
+  // Time unit for VSM metrics display
+  timeUnit: 'minutes',
+
+  // Real-time simulation configuration
+  durationPreset: 'unlimited',
+  targetDuration: Infinity,
+  speedPreset: '1x',
+  ticksPerSecond: 60,
+  simulationProgress: 0,
+  autoStopEnabled: true,
+
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
   setItemConfig: (config) => set(state => ({ itemConfig: { ...state.itemConfig, ...config } })),
+  setTimeUnit: (unit) => set({ timeUnit: unit }),
+
+  setDurationPreset: (preset: string) => {
+    const presetConfig = DURATION_PRESETS[preset];
+    if (!presetConfig) return;
+    set({
+      durationPreset: preset,
+      targetDuration: presetConfig.totalTicks,
+      // Recalculate progress based on current tickCount
+      simulationProgress: presetConfig.totalTicks === Infinity
+        ? 0
+        : Math.min(100, (get().tickCount / presetConfig.totalTicks) * 100)
+    });
+  },
+
+  setSpeedPreset: (preset: string) => {
+    const speedConfig = SPEED_PRESETS.find(s => s.key === preset);
+    if (!speedConfig) return;
+    set({
+      speedPreset: preset,
+      ticksPerSecond: speedConfig.ticksPerSecond
+    });
+  },
+
+  setAutoStop: (enabled: boolean) => set({ autoStopEnabled: enabled }),
 
   onNodesChange: (changes: NodeChange[]) => {
     set({
@@ -224,6 +260,20 @@ export const useStore = create<SimulationState>((set, get) => ({
   deleteEdge: (id: string) => {
     set({
         edges: get().edges.filter(e => e.id !== id)
+    });
+  },
+
+  reconnectEdge: (oldEdge: Edge, newConnection: Connection) => {
+    // Replace the old edge with a new connection
+    const { edges } = get();
+    const filteredEdges = edges.filter(e => e.id !== oldEdge.id);
+    set({
+      edges: addEdge({
+        ...newConnection,
+        type: 'processEdge',
+        animated: false,
+        markerEnd: { type: MarkerType.ArrowClosed }
+      }, filteredEdges),
     });
   },
 
@@ -346,6 +396,9 @@ export const useStore = create<SimulationState>((set, get) => ({
       tickCount: 0,
       items: [],
       history: [],
+      simulationProgress: 0, // Reset progress but preserve duration/speed settings
+      itemsByNode: new Map(),
+      itemCounts: { wip: 0, completed: 0, failed: 0 },
       nodes: state.nodes.map(n => {
         if (n.type === 'processNode' || n.type === 'startNode' || n.type === 'endNode') {
             return {
@@ -398,8 +451,8 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   // Persistence
   saveFlow: () => {
-    const { nodes, edges, itemConfig } = get();
-    const flow = { nodes, edges, itemConfig };
+    const { nodes, edges, itemConfig, durationPreset, speedPreset, autoStopEnabled } = get();
+    const flow = { nodes, edges, itemConfig, durationPreset, speedPreset, autoStopEnabled };
     localStorage.setItem('processFlowData', JSON.stringify(flow));
     alert('Flow saved to local storage!');
   },
@@ -409,14 +462,24 @@ export const useStore = create<SimulationState>((set, get) => ({
     if (flowStr) {
       const flow = JSON.parse(flowStr);
       if (flow.nodes && flow.edges) {
-          set({ 
-              nodes: flow.nodes, 
-              edges: flow.edges, 
+          const durationConfig = DURATION_PRESETS[flow.durationPreset] || DURATION_PRESETS['unlimited'];
+          const speedConfig = SPEED_PRESETS.find(s => s.key === flow.speedPreset) || SPEED_PRESETS[1]; // Default to 1x
+          set({
+              nodes: flow.nodes,
+              edges: flow.edges,
               itemConfig: flow.itemConfig || get().itemConfig,
-              items: [], 
-              isRunning: false, 
+              durationPreset: flow.durationPreset || 'unlimited',
+              targetDuration: durationConfig.totalTicks,
+              speedPreset: flow.speedPreset || '1x',
+              ticksPerSecond: speedConfig.ticksPerSecond,
+              autoStopEnabled: flow.autoStopEnabled !== undefined ? flow.autoStopEnabled : true,
+              items: [],
+              isRunning: false,
               tickCount: 0,
-              history: []
+              simulationProgress: 0,
+              history: [],
+              itemsByNode: new Map(),
+              itemCounts: { wip: 0, completed: 0, failed: 0 }
             });
       }
     } else {
@@ -472,14 +535,33 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   tick: () => {
     set((state) => {
-      const { nodes, edges, items, tickCount, autoInjectionEnabled, history } = state;
-      const TRANSIT_DURATION = 20;
+      const { nodes, edges, items, tickCount, autoInjectionEnabled, history, targetDuration, autoStopEnabled } = state;
+
+      // AUTO-STOP CHECK: Stop simulation when target duration reached
+      if (autoStopEnabled && targetDuration !== Infinity && tickCount >= targetDuration) {
+        return { ...state, isRunning: false, simulationProgress: 100 };
+      }
 
       // Build node lookup map for O(1) access (instead of O(n) find calls)
       const nodeMap = new Map<string, AppNode>();
       for (const node of nodes) {
         nodeMap.set(node.id, node);
       }
+
+      // Helper: Calculate transit duration based on edge distance (more realistic)
+      const getTransitDuration = (sourceId: string, targetId: string): number => {
+        const sourceNode = nodeMap.get(sourceId);
+        const targetNode = nodeMap.get(targetId);
+        if (!sourceNode || !targetNode) return 10; // Default fallback
+
+        // Calculate orthogonal distance (matching the visual path)
+        const dx = Math.abs(targetNode.position.x - sourceNode.position.x);
+        const dy = Math.abs(targetNode.position.y - sourceNode.position.y);
+        const distance = dx + dy; // Manhattan distance for orthogonal paths
+
+        // Scale: 1 tick per 25 pixels, minimum 5 ticks, maximum 30 ticks
+        return Math.max(5, Math.min(30, Math.round(distance / 25)));
+      };
 
       // Build edge lookup by source for O(1) access
       const edgesBySource = new Map<string, Edge[]>();
@@ -582,10 +664,12 @@ export const useStore = create<SimulationState>((set, get) => ({
               if (passed) {
                 const nextNodeId = getNextNode(node.id, pData.routingWeights);
                 if (nextNodeId) {
+                  const transitDuration = getTransitDuration(node.id, nextNodeId);
                   item.status = ItemStatus.TRANSIT;
                   item.fromNodeId = node.id;
                   item.currentNodeId = nextNodeId;
-                  item.remainingTime = TRANSIT_DURATION;
+                  item.remainingTime = transitDuration;
+                  item.processingDuration = transitDuration; // Store for progress calculation
                   item.transitProgress = 0;
                 } else {
                   item.status = ItemStatus.COMPLETED;
@@ -603,7 +687,9 @@ export const useStore = create<SimulationState>((set, get) => ({
         } else if (item.status === ItemStatus.TRANSIT) {
           item.remainingTime--;
           item.timeTransit++;
-          item.transitProgress = 1 - (item.remainingTime / TRANSIT_DURATION);
+          // Use stored processingDuration for accurate progress (distance-based transit)
+          const transitDuration = item.processingDuration || 10;
+          item.transitProgress = Math.min(1, 1 - (item.remainingTime / transitDuration));
 
           if (item.remainingTime <= 0) {
             item.status = ItemStatus.QUEUED;
@@ -663,19 +749,22 @@ export const useStore = create<SimulationState>((set, get) => ({
       // --- UPDATE NODES (only if stats changed or validation needed) ---
       const nextNodes = nodes.map(n => {
         const statsUpdate = nodesUpdates.get(n.id);
-        if (n.type === 'processNode' || n.type === 'startNode') {
+        if (n.type === 'processNode' || n.type === 'startNode' || n.type === 'endNode') {
           const pData = n.data as ProcessNodeData;
-          const outgoing = edgesBySource.get(n.id);
           let validationError: string | undefined;
 
-          if (!outgoing || outgoing.length === 0) {
-            const lowerLabel = pData.label.toLowerCase();
-            if (!lowerLabel.includes('end') && !lowerLabel.includes('ship') && !lowerLabel.includes('scrap') && !lowerLabel.includes('discharge')) {
-              validationError = 'No Output Path';
+          // Validation for nodes that need outgoing paths (not end nodes)
+          if (n.type !== 'endNode') {
+            const outgoing = edgesBySource.get(n.id);
+            if (!outgoing || outgoing.length === 0) {
+              const lowerLabel = pData.label.toLowerCase();
+              if (!lowerLabel.includes('end') && !lowerLabel.includes('ship') && !lowerLabel.includes('scrap') && !lowerLabel.includes('discharge')) {
+                validationError = 'No Output Path';
+              }
             }
-          }
-          if (pData.resources === 0) {
-            validationError = 'Zero Capacity';
+            if (pData.resources === 0) {
+              validationError = 'Zero Capacity';
+            }
           }
 
           if (statsUpdate || validationError !== pData.validationError) {
@@ -745,13 +834,20 @@ export const useStore = create<SimulationState>((set, get) => ({
       // Compute derived state for UI
       const derived = computeDerivedState(prunedItems);
 
+      // Calculate progress percentage
+      const newTickCount = tickCount + 1;
+      const simulationProgress = targetDuration === Infinity
+        ? 0
+        : Math.min(100, (newTickCount / targetDuration) * 100);
+
       return {
         items: prunedItems,
         nodes: nextNodes,
-        tickCount: tickCount + 1,
+        tickCount: newTickCount,
         history: nextHistory,
         itemsByNode: derived.itemsByNode,
-        itemCounts: derived.itemCounts
+        itemCounts: derived.itemCounts,
+        simulationProgress
       };
     });
   }

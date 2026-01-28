@@ -35,15 +35,19 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       }
   };
 
-  const handleStyle = {
-      width: '0.8rem',
-      height: '0.8rem',
+  // Handle styling - visible on hover/selection with larger hit areas
+  const handleBaseStyle = {
+      width: '12px',
+      height: '12px',
       background: '#10b981', // emerald-500
       border: '2px solid white',
       zIndex: 50,
-      opacity: 0,
-      transition: 'opacity 0.2s, transform 0.2s',
+      transition: 'all 0.2s ease',
+      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
   };
+
+  // Show handles when selected OR hovered
+  const handleVisibility = selected ? { opacity: 1 } : { opacity: 0 };
 
   const handleDelete = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -74,11 +78,11 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
           <Trash2 size={12} />
       </button>
 
-      {/* Omni-Handles: Sources only */}
-      <Handle type="source" position={Position.Right} id="right" className="group-hover:opacity-100" style={handleStyle} />
-      <Handle type="source" position={Position.Bottom} id="bottom" className="group-hover:opacity-100" style={handleStyle} />
-      <Handle type="source" position={Position.Left} id="left" className="group-hover:opacity-100" style={handleStyle} />
-      <Handle type="source" position={Position.Top} id="top" className="group-hover:opacity-100" style={handleStyle} />
+      {/* Omni-Handles: Sources only - visible on hover AND when selected */}
+      <Handle type="source" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      <Handle type="source" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      <Handle type="source" position={Position.Left} id="left" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      <Handle type="source" position={Position.Top} id="top" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
 
       <div className="overflow-hidden rounded-[10px] w-full h-full">
           {/* Header */}

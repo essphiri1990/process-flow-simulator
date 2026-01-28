@@ -54,15 +54,19 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       }
   };
 
-  const handleStyle = {
-      width: '0.8rem',
-      height: '0.8rem',
+  // Handle styling - visible on hover/selection with larger hit areas
+  const handleBaseStyle = {
+      width: '12px',
+      height: '12px',
       background: '#3b82f6',
       border: '2px solid white',
       zIndex: 50,
-      opacity: 0, // Invisible by default
-      transition: 'opacity 0.2s, transform 0.2s',
+      transition: 'all 0.2s ease',
+      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
   };
+
+  // Show handles when selected OR hovered
+  const handleVisibility = selected ? { opacity: 1 } : { opacity: 0 };
 
   const handleDelete = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -90,22 +94,23 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       </button>
 
       {/* OMNI-HANDLES: Top, Right, Bottom, Left. Each side has both Source and Target to allow full flexibility. */}
-      
+      {/* Handles are visible on hover AND when selected for better discoverability */}
+
       {/* Left */}
-      <Handle type="target" position={Position.Left} id="left-target" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
-      <Handle type="source" position={Position.Left} id="left-source" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
-      
+      <Handle type="target" position={Position.Left} id="left-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      <Handle type="source" position={Position.Left} id="left-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+
       {/* Top */}
-      <Handle type="target" position={Position.Top} id="top-target" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
-      <Handle type="source" position={Position.Top} id="top-source" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
+      <Handle type="target" position={Position.Top} id="top-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      <Handle type="source" position={Position.Top} id="top-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
 
       {/* Right */}
-      <Handle type="target" position={Position.Right} id="right-target" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
-      <Handle type="source" position={Position.Right} id="right-source" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
+      <Handle type="target" position={Position.Right} id="right-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      <Handle type="source" position={Position.Right} id="right-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
 
       {/* Bottom */}
-      <Handle type="target" position={Position.Bottom} id="bottom-target" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
-      <Handle type="source" position={Position.Bottom} id="bottom-source" className="!bg-blue-500 group-hover:opacity-100" style={handleStyle} />
+      <Handle type="target" position={Position.Bottom} id="bottom-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      <Handle type="source" position={Position.Bottom} id="bottom-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
 
 
       {/* Content Wrapper */}

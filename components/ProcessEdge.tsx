@@ -1,17 +1,155 @@
-import React, { memo, useMemo } from 'react';
-import { BaseEdge, EdgeLabelRenderer, EdgeProps, getBezierPath } from 'reactflow';
+import React, { memo, useMemo, useState } from 'react';
+import { BaseEdge, EdgeLabelRenderer, EdgeProps, getSmoothStepPath } from 'reactflow';
 import { useStore } from '../store';
 import { ItemStatus } from '../types';
-import { X } from 'lucide-react';
+import { X, GripVertical } from 'lucide-react';
 
-// Cubic Bezier interpolation function
-function getBezierPoint(t: number, p0: number, p1: number, p2: number, p3: number) {
-  const cX = 3 * (p1 - p0);
-  const bX = 3 * (p2 - p1) - cX;
-  const aX = p3 - p0 - cX - bX;
+// Parse SVG path string into line segments (handles M, L, H, V, Q commands)
+interface PathSegment {
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  length: number;
+}
 
-  const x = (aX * Math.pow(t, 3)) + (bX * Math.pow(t, 2)) + (cX * t) + p0;
-  return x;
+function parsePathToSegments(pathString: string): PathSegment[] {
+  const segments: PathSegment[] = [];
+
+  // Split path into commands - match command letter followed by numbers/commas/spaces
+  const commandRegex = /([MLHVQCZ])([^MLHVQCZ]*)/gi;
+  const commands: { type: string; args: number[] }[] = [];
+
+  let match;
+  while ((match = commandRegex.exec(pathString)) !== null) {
+    const type = match[1].toUpperCase();
+    const argsStr = match[2].trim();
+    const args = argsStr ? argsStr.split(/[\s,]+/).map(Number).filter(n => !isNaN(n)) : [];
+    commands.push({ type, args });
+  }
+
+  let currentX = 0;
+  let currentY = 0;
+  let startX = 0;
+  let startY = 0;
+
+  for (const cmd of commands) {
+    const { type, args } = cmd;
+
+    switch (type) {
+      case 'M': // Move to
+        currentX = args[0];
+        currentY = args[1];
+        startX = currentX;
+        startY = currentY;
+        break;
+
+      case 'L': // Line to
+        {
+          const endX = args[0];
+          const endY = args[1];
+          const length = Math.sqrt((endX - currentX) ** 2 + (endY - currentY) ** 2);
+          if (length > 0) {
+            segments.push({ startX: currentX, startY: currentY, endX, endY, length });
+          }
+          currentX = endX;
+          currentY = endY;
+        }
+        break;
+
+      case 'H': // Horizontal line to
+        {
+          const endX = args[0];
+          const length = Math.abs(endX - currentX);
+          if (length > 0) {
+            segments.push({ startX: currentX, startY: currentY, endX, endY: currentY, length });
+          }
+          currentX = endX;
+        }
+        break;
+
+      case 'V': // Vertical line to
+        {
+          const endY = args[0];
+          const length = Math.abs(endY - currentY);
+          if (length > 0) {
+            segments.push({ startX: currentX, startY: currentY, endX: currentX, endY, length });
+          }
+          currentY = endY;
+        }
+        break;
+
+      case 'Q': // Quadratic bezier (approximate as line for simplicity)
+        {
+          // Q has control point (args[0], args[1]) and end point (args[2], args[3])
+          const endX = args[2];
+          const endY = args[3];
+          const length = Math.sqrt((endX - currentX) ** 2 + (endY - currentY) ** 2);
+          if (length > 0) {
+            segments.push({ startX: currentX, startY: currentY, endX, endY, length });
+          }
+          currentX = endX;
+          currentY = endY;
+        }
+        break;
+
+      case 'C': // Cubic bezier (approximate as line)
+        {
+          // C has two control points and end point
+          const endX = args[4];
+          const endY = args[5];
+          const length = Math.sqrt((endX - currentX) ** 2 + (endY - currentY) ** 2);
+          if (length > 0) {
+            segments.push({ startX: currentX, startY: currentY, endX, endY, length });
+          }
+          currentX = endX;
+          currentY = endY;
+        }
+        break;
+
+      case 'Z': // Close path
+        {
+          const length = Math.sqrt((startX - currentX) ** 2 + (startY - currentY) ** 2);
+          if (length > 0) {
+            segments.push({ startX: currentX, startY: currentY, endX: startX, endY: startY, length });
+          }
+          currentX = startX;
+          currentY = startY;
+        }
+        break;
+    }
+  }
+
+  return segments;
+}
+
+// Get point along parsed path at position t (0 to 1)
+function getPointAlongPath(segments: PathSegment[], t: number): { x: number; y: number } {
+  if (segments.length === 0) return { x: 0, y: 0 };
+
+  t = Math.max(0, Math.min(1, t));
+
+  const totalLength = segments.reduce((sum, seg) => sum + seg.length, 0);
+  if (totalLength === 0) return { x: segments[0].startX, y: segments[0].startY };
+
+  const targetDist = t * totalLength;
+  let distTraveled = 0;
+
+  for (const seg of segments) {
+    if (distTraveled + seg.length >= targetDist) {
+      // This is the segment containing our point
+      const segT = (targetDist - distTraveled) / seg.length;
+      return {
+        x: seg.startX + (seg.endX - seg.startX) * segT,
+        y: seg.startY + (seg.endY - seg.startY) * segT
+      };
+    }
+    distTraveled += seg.length;
+  }
+
+  // Return end point if we somehow exceed
+  const lastSeg = segments[segments.length - 1];
+  return { x: lastSeg.endX, y: lastSeg.endY };
 }
 
 const ProcessEdge: React.FC<EdgeProps> = ({
@@ -28,13 +166,15 @@ const ProcessEdge: React.FC<EdgeProps> = ({
   target,
   selected
 }) => {
-  const [edgePath, labelX, labelY] = getBezierPath({
+  // Use orthogonal (step) path instead of bezier for clean, professional look
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
+    borderRadius: 8, // Slightly rounded corners for a polished look
   });
 
   const deleteEdge = useStore((state) => state.deleteEdge);
@@ -68,38 +208,91 @@ const ProcessEdge: React.FC<EdgeProps> = ({
     return result;
   }, [items, source, target]);
 
-  const dist = Math.abs(targetX - sourceX);
-  const controlOffset = dist * 0.5; 
-  const p1x = sourceX + controlOffset;
-  const p1y = sourceY;
-  const p2x = targetX - controlOffset;
-  const p2y = targetY;
+  // Parse the actual SVG path once for accurate item positioning
+  const pathSegments = useMemo(() => parsePathToSegments(edgePath), [edgePath]);
+
+  // Hover state for showing reconnection indicators
+  const [isHovered, setIsHovered] = useState(false);
 
   return (
     <>
-      <BaseEdge path={edgePath} markerEnd={markerEnd} style={{ ...style, strokeWidth: 2, stroke: selected ? '#3b82f6' : '#94a3b8' }} />
-      
-      {/* Transit Items Visualization */}
+      {/* Invisible wider path for easier selection/hover */}
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={20}
+        style={{ cursor: 'pointer' }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      />
+
+      <BaseEdge
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={{
+          ...style,
+          strokeWidth: selected || isHovered ? 3 : 2,
+          stroke: selected ? '#3b82f6' : isHovered ? '#64748b' : '#94a3b8',
+          transition: 'stroke-width 0.2s, stroke 0.2s',
+        }}
+      />
+
+      {/* Reconnection endpoint indicators - visible on hover/selection */}
+      {(selected || isHovered) && (
+        <>
+          {/* Source endpoint indicator */}
+          <g style={{ transform: `translate(${sourceX}px, ${sourceY}px)` }}>
+            <circle
+              r="6"
+              fill="#3b82f6"
+              stroke="white"
+              strokeWidth="2"
+              style={{ cursor: 'grab', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.2))' }}
+            />
+          </g>
+          {/* Target endpoint indicator */}
+          <g style={{ transform: `translate(${targetX}px, ${targetY}px)` }}>
+            <circle
+              r="6"
+              fill="#3b82f6"
+              stroke="white"
+              strokeWidth="2"
+              style={{ cursor: 'grab', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.2))' }}
+            />
+          </g>
+        </>
+      )}
+
+      {/* Transit Items Visualization - follows the actual rendered path */}
       {transitItems.map((item) => {
         const t = item.transitProgress; // 0 to 1
-        const x = getBezierPoint(t, sourceX, p1x, p2x, targetX);
-        const y = getBezierPoint(t, sourceY, p1y, p2y, targetY);
+        const pos = getPointAlongPath(pathSegments, t);
 
         return (
-          <g key={item.id} style={{ transform: `translate(${x}px, ${y}px)` }}>
+          <g key={item.id} style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
             {itemConfig.shape === 'square' ? (
-                <rect 
-                    x="-5" y="-5" width="10" height="10" 
-                    fill={itemConfig.color} 
-                    stroke="white" 
-                    strokeWidth="1"
+                <rect
+                    x="-5" y="-5" width="10" height="10"
+                    fill={itemConfig.color}
+                    stroke="white"
+                    strokeWidth="1.5"
+                    rx="1"
+                />
+            ) : itemConfig.shape === 'rounded' ? (
+                <rect
+                    x="-5" y="-5" width="10" height="10"
+                    fill={itemConfig.color}
+                    stroke="white"
+                    strokeWidth="1.5"
+                    rx="3"
                 />
             ) : (
                 <circle
                     r="5"
                     fill={itemConfig.color}
                     stroke="white"
-                    strokeWidth="1"
+                    strokeWidth="1.5"
                 />
             )}
           </g>
@@ -116,7 +309,7 @@ const ProcessEdge: React.FC<EdgeProps> = ({
           className="flex flex-col items-center gap-1"
         >
           {percentageLabel && (
-            <div className="bg-slate-100 text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-slate-300 shadow-sm">
+            <div className="bg-white text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-slate-300 shadow-sm">
                 {percentageLabel}
             </div>
           )}
