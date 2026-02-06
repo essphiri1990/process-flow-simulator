@@ -8,6 +8,7 @@ A visual, interactive process flow simulation tool for modeling business process
 
 - **Drag-and-drop canvas** - Build process flows visually with ReactFlow
 - **Discrete-event simulation** - Run tick-based simulations with configurable speed
+- **Demand-driven mode** - Specify exact demand per hour/day/week/month (working hours, per-node schedules)
 - **Real-time VSM metrics** - Lead time, value-added time, process cycle efficiency (PCE), throughput
 - **Bottleneck detection** - Visual indicators for queue buildup and capacity issues
 - **Weighted routing** - Configure probability-based routing between nodes
@@ -77,9 +78,9 @@ npm run preview
 
 - **Lead Time** - Total time items spend in the system
 - **Value Added Time (VAT)** - Time spent actively processing
-- **Non-Value Added Time (NVAT)** - Queue wait + transit time
+- **Non-Value Added Time (NVAT)** - Queue wait time (transit is visual-only)
 - **Process Cycle Efficiency (PCE)** - VAT / Lead Time (higher is better)
-- **Throughput** - Items completed per time unit
+- **Throughput** - Items completed per completion window (default 50)
 - **WIP** - Work in progress (items currently in system)
 
 ## Project Structure

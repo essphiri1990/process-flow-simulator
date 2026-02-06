@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState, useRef } from 'react';
 import ReactFlow, {
   Background,
   Controls as FlowControls,
-  MiniMap,
+
   ReactFlowProvider,
   Node,
   Edge,
@@ -16,14 +16,18 @@ import StartNode from './components/StartNode';
 import EndNode from './components/EndNode';
 import ProcessEdge from './components/ProcessEdge';
 import AnnotationNode from './components/AnnotationNode';
-import Header from './components/Header';
+import Sidebar from './components/Sidebar';
 import Controls from './components/Controls';
 import ConfigPanel from './components/ConfigPanel';
-import VSMStats from './components/VSMStats';
 import SettingsModal from './components/SettingsModal';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
+import ToastContainer from './components/Toast';
+import SunMoonCycle from './components/SunMoonCycle';
+import Onboarding, { shouldShowOnboarding } from './components/Onboarding';
+import ErrorBoundary from './components/ErrorBoundary';
+import DebugOverlay from './components/DebugOverlay';
 
-import { MousePointer2, Info } from 'lucide-react';
+import { MousePointer2, Info, Menu } from 'lucide-react';
 
 const nodeTypes = {
   processNode: ProcessNode,
@@ -55,6 +59,8 @@ function Flow() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding);
 
   const handleNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     // Open config for process, start, and end nodes
@@ -62,6 +68,14 @@ function Flow() {
       setSelectedNodeId(node.id);
     } else {
       setSelectedNodeId(null);
+    }
+  }, []);
+
+  const handleNodeDoubleClick = useCallback((event: React.MouseEvent, node: Node) => {
+    // Double-click opens config panel directly
+    if (['processNode', 'startNode', 'endNode'].includes(node.type || '')) {
+      setSelectedNodeId(node.id);
+      setIsConfigOpen(true);
     }
   }, []);
 
@@ -113,13 +127,30 @@ function Flow() {
   return (
     <div className="w-full h-screen bg-slate-50 relative font-sans text-slate-900 overflow-hidden">
 
-      {/* Top Header */}
-      <Header onOpenSettings={() => setIsSettingsOpen(true)} />
+      {/* Sidebar */}
+      <Sidebar
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+      />
+
+      {/* Menu Toggle Button */}
+      {!isSidebarOpen && (
+        <button
+          onClick={() => setIsSidebarOpen(true)}
+          className="fixed top-3 left-3 z-30 p-2.5 bg-white/90 backdrop-blur-md rounded-xl border border-slate-200/60 shadow-md text-slate-500 hover:text-slate-700 hover:bg-white active:scale-[0.95] transition-all duration-150"
+          title="Open Menu"
+        >
+          <Menu size={18} />
+        </button>
+      )}
+
+      <DebugOverlay />
 
       {/* Help Button (Top Right) */}
       <button
         onClick={() => setShowHelp(!showHelp)}
-        className={`absolute top-16 right-4 z-10 p-2 rounded-lg transition ${
+        className={`absolute top-3 right-3 z-10 p-2 rounded-lg transition ${
           showHelp ? 'bg-blue-100 text-blue-600' : 'bg-white/80 text-slate-500 hover:bg-white hover:text-slate-700'
         } border border-slate-200 shadow-sm`}
         title="Toggle Help"
@@ -129,7 +160,7 @@ function Flow() {
 
       {/* Help Panel (Collapsible) */}
       {showHelp && (
-        <div className="absolute top-16 right-14 z-10 bg-white/95 backdrop-blur p-3 rounded-xl border border-slate-200 shadow-lg text-xs text-slate-500 max-w-xs animate-in fade-in slide-in-from-right-2 duration-200">
+        <div className="absolute top-12 right-3 z-10 bg-white/95 backdrop-blur p-3 rounded-xl border border-slate-200 shadow-lg text-xs text-slate-500 max-w-xs animate-in fade-in slide-in-from-right-2 duration-200">
           <h4 className="font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
             <MousePointer2 size={12} />
             Quick Guide
@@ -137,7 +168,7 @@ function Flow() {
           <ul className="space-y-1.5">
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-              <span>Click a node to configure it</span>
+              <span>Double-click a node to configure it</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
@@ -149,7 +180,7 @@ function Flow() {
             </li>
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-              <span>Enable "Inputs" to auto-generate items</span>
+              <span>Enable "Auto Feed" to generate items automatically</span>
             </li>
           </ul>
           <div className="mt-3 pt-2 border-t border-slate-100 flex items-center gap-2">
@@ -159,8 +190,13 @@ function Flow() {
         </div>
       )}
 
+      {/* Sun/Moon Cycle */}
+      <div className="absolute top-0 right-0 z-10 pointer-events-none">
+        <SunMoonCycle />
+      </div>
+
       {/* Main Canvas */}
-      <div className="absolute inset-0 pt-14">
+      <div className="absolute inset-0">
         <ReactFlow
           nodes={nodesWithSelection}
           edges={edges}
@@ -174,6 +210,7 @@ function Flow() {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
           onPaneClick={handlePaneClick}
           fitView
           minZoom={0.1}
@@ -186,16 +223,6 @@ function Flow() {
         >
           <Background color="#cbd5e1" gap={20} size={1} />
           <FlowControls className="bg-white shadow-lg border border-slate-200 rounded-lg overflow-hidden" />
-          <MiniMap
-            className="border border-slate-200 rounded-lg shadow-lg"
-            nodeColor={(n) => {
-              if (n.type === 'annotationNode') return '#fde047';
-              if (n.type === 'startNode') return '#10b981';
-              if (n.type === 'endNode') return '#1e293b';
-              return '#3b82f6';
-            }}
-            maskColor="rgba(241, 245, 249, 0.7)"
-          />
         </ReactFlow>
       </div>
 
@@ -206,7 +233,6 @@ function Flow() {
         onOpenAnalytics={() => setIsAnalyticsOpen(true)}
       />
 
-      <VSMStats onOpenAnalytics={() => setIsAnalyticsOpen(true)} />
 
       {isConfigOpen && selectedNodeId && (
         <ConfigPanel
@@ -222,14 +248,24 @@ function Flow() {
       {isAnalyticsOpen && (
         <AnalyticsDashboard onClose={() => setIsAnalyticsOpen(false)} />
       )}
+
+      {/* Toast notifications */}
+      <ToastContainer />
+
+      {/* First-run onboarding */}
+      {showOnboarding && (
+        <Onboarding onDismiss={() => setShowOnboarding(false)} />
+      )}
     </div>
   );
 }
 
 export default function App() {
   return (
-    <ReactFlowProvider>
-      <Flow />
-    </ReactFlowProvider>
+    <ErrorBoundary>
+      <ReactFlowProvider>
+        <Flow />
+      </ReactFlowProvider>
+    </ErrorBoundary>
   );
 }

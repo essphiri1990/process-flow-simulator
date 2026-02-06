@@ -8,6 +8,8 @@ Transform the tick-based simulation into a real-time system where:
 - **Duration presets:** 1 day, 1 week, 1 month, 3 months, 12 months
 - **Working hours model:** 8-hour workday, 5-day week
 
+**New requirement (evolved use case):** Demand-driven simulation must generate **exact arrivals** over a chosen period (hour/day/week/month). See `PLAN-DEMAND-DRIVEN-SIMULATION.md` for the detailed plan.
+
 ---
 
 ## Duration Presets (8-hour workday)

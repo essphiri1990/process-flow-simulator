@@ -1,8 +1,8 @@
-import React, { memo, useMemo, useState } from 'react';
+import React, { memo, useMemo, useState, useCallback, useRef } from 'react';
 import { BaseEdge, EdgeLabelRenderer, EdgeProps, getSmoothStepPath } from 'reactflow';
 import { useStore } from '../store';
-import { ItemStatus } from '../types';
-import { X, GripVertical } from 'lucide-react';
+import { ItemStatus, getTimeUnitAbbrev } from '../types';
+import { X, Clock } from 'lucide-react';
 
 // Parse SVG path string into line segments (handles M, L, H, V, Q commands)
 interface PathSegment {
@@ -166,6 +166,20 @@ const ProcessEdge: React.FC<EdgeProps> = ({
   target,
   selected
 }) => {
+  const deleteEdge = useStore((state) => state.deleteEdge);
+  const updateEdgeData = useStore((state) => state.updateEdgeData);
+  const items = useStore((state) => state.items);
+  const nodes = useStore((state) => state.nodes);
+  const edges = useStore((state) => state.edges);
+  const itemConfig = useStore((state) => state.itemConfig);
+  const timeUnit = useStore((state) => state.timeUnit);
+  const unitAbbrev = getTimeUnitAbbrev(timeUnit);
+
+  // Get current edge's custom data
+  const currentEdge = edges.find(e => e.id === id);
+  const customTransitTime = (currentEdge as any)?.data?.transitTime;
+  const customOffset = (currentEdge as any)?.data?.offset;
+
   // Use orthogonal (step) path instead of bezier for clean, professional look
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
@@ -174,14 +188,9 @@ const ProcessEdge: React.FC<EdgeProps> = ({
     targetX,
     targetY,
     targetPosition,
-    borderRadius: 8, // Slightly rounded corners for a polished look
+    borderRadius: 8,
+    ...(customOffset !== undefined && { offset: customOffset }),
   });
-
-  const deleteEdge = useStore((state) => state.deleteEdge);
-  const items = useStore((state) => state.items);
-  const nodes = useStore((state) => state.nodes);
-  const edges = useStore((state) => state.edges);
-  const itemConfig = useStore((state) => state.itemConfig);
 
   // Memoize routing percentage calculation
   const percentageLabel = useMemo(() => {
@@ -189,7 +198,7 @@ const ProcessEdge: React.FC<EdgeProps> = ({
     const outgoingEdges = edges.filter(e => e.source === source);
 
     if (sourceNode && outgoingEdges.length > 1) {
-      const weights = sourceNode.data.routingWeights || {};
+      const weights = (sourceNode.data as import('../types').ProcessNodeData).routingWeights || {};
       const weight = weights[target] ?? 1;
       const totalWeight = outgoingEdges.reduce((sum, e) => sum + (weights[e.target] ?? 1), 0);
       return `${Math.round((weight / totalWeight) * 100)}%`;
@@ -213,6 +222,36 @@ const ProcessEdge: React.FC<EdgeProps> = ({
 
   // Hover state for showing reconnection indicators
   const [isHovered, setIsHovered] = useState(false);
+
+  // Drag state for bend height handle
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ y: number; startOffset: number } | null>(null);
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startY = e.clientY;
+    const startOffset = customOffset ?? 20;
+    dragStartRef.current = { y: startY, startOffset };
+    setIsDragging(true);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!dragStartRef.current) return;
+      const deltaY = moveEvent.clientY - dragStartRef.current.y;
+      const newOffset = Math.max(0, Math.round(dragStartRef.current.startOffset + deltaY));
+      updateEdgeData(id, { offset: newOffset });
+    };
+
+    const handleMouseUp = () => {
+      dragStartRef.current = null;
+      setIsDragging(false);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  }, [customOffset, id, updateEdgeData]);
 
   return (
     <>
@@ -311,6 +350,42 @@ const ProcessEdge: React.FC<EdgeProps> = ({
           {percentageLabel && (
             <div className="bg-white text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-slate-300 shadow-sm">
                 {percentageLabel}
+            </div>
+          )}
+
+          {/* Transit time editor - visible when selected */}
+          {selected && (
+            <div className="bg-white border border-slate-300 rounded-lg shadow-sm px-2 py-1 flex items-center gap-1.5">
+              <Clock size={10} className="text-slate-400" />
+              <input
+                type="number"
+                min="0"
+                max="100"
+                placeholder="auto"
+                value={customTransitTime ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value === '' ? undefined : parseInt(e.target.value);
+                  updateEdgeData(id, { transitTime: val });
+                }}
+                className="w-12 text-[10px] text-slate-700 font-mono bg-transparent outline-none text-center placeholder:text-slate-300"
+                title={`Transit time (${unitAbbrev}). Leave empty for auto-calculated distance-based transit.`}
+              />
+              <span className="text-[9px] text-slate-400">{unitAbbrev}</span>
+            </div>
+          )}
+
+          {/* Draggable bend height handle - visible when selected */}
+          {selected && (
+            <div
+              onMouseDown={handleDragStart}
+              className={`w-6 h-6 rounded-full flex items-center justify-center shadow-md border-2 border-white transition-colors ${isDragging ? 'bg-blue-600 scale-110' : 'bg-blue-500 hover:bg-blue-600 hover:scale-110'}`}
+              style={{ cursor: 'ns-resize' }}
+              title="Drag up/down to adjust bend height"
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M5 1L3 3.5H7L5 1Z" fill="white" />
+                <path d="M5 9L3 6.5H7L5 9Z" fill="white" />
+              </svg>
             </div>
           )}
 

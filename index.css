@@ -1,0 +1,11 @@
+/* Enlarge ReactFlow bottom-left controls toolbar */
+.react-flow__controls-button {
+  width: 28px;
+  height: 28px;
+  padding: 8px;
+}
+
+.react-flow__controls-button svg {
+  max-width: 20px;
+  max-height: 20px;
+}

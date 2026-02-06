@@ -1,6 +1,6 @@
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { ProcessNodeData, ItemStatus } from '../types';
+import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev } from '../types';
 import { useStore } from '../store';
 import { Play, Zap, Clock, Users, AlertTriangle, User, Box, FileText, Trash2 } from 'lucide-react';
 
@@ -8,19 +8,24 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup)
   const items = useStore((state) => state.itemsByNode.get(id) || []);
   const itemConfig = useStore((state) => state.itemConfig);
+  const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const deleteNode = useStore((state) => state.deleteNode);
+  const timeUnit = useStore((state) => state.timeUnit);
+  const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
   // Single pass to separate items by status
   const processingItems: typeof items = [];
   for (const item of items) {
     if (item.status === ItemStatus.PROCESSING) processingItems.push(item);
   }
-  
+  // Sort by spawnTick so items stay in stable slot positions across renders
+  processingItems.sort((a, b) => a.spawnTick - b.spawnTick);
+
   // Visual Styling
   let borderColor = "border-emerald-500";
   let ringColor = "ring-emerald-500/20";
   let bgOverlay = "bg-emerald-50/10";
-  
+
   if (selected) {
      ringColor = "ring-emerald-500/40";
   }
@@ -70,7 +75,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       )}
 
       {/* Delete Button */}
-      <button 
+      <button
           onClick={handleDelete}
           className="absolute -top-3 -right-3 bg-white text-slate-400 border border-slate-200 hover:text-red-500 hover:border-red-500 p-1.5 rounded-full shadow-sm z-50 opacity-0 group-hover:opacity-100 transition-opacity"
           title="Delete Node"
@@ -86,13 +91,19 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
       <div className="overflow-hidden rounded-[10px] w-full h-full">
           {/* Header */}
-          <div className="bg-emerald-50/50 border-b border-emerald-100 px-4 pt-5 pb-2">
+          <div
+            className="border-b px-4 pt-5 pb-2"
+            style={{
+              backgroundColor: (data.headerColor || defaultHeaderColor) + '40',
+              borderColor: (data.headerColor || defaultHeaderColor) + '60',
+            }}
+          >
              <div className="flex justify-between items-start">
                 <div>
                     <div className="font-bold text-slate-800 text-lg leading-tight">{data.label}</div>
                     {data.sourceConfig?.enabled && (
                         <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-medium mt-1">
-                            <Zap size={10} fill="currentColor"/> Generates {data.sourceConfig.batchSize} every {data.sourceConfig.interval}t
+                            <Zap size={10} fill="currentColor"/> Generates {data.sourceConfig.batchSize} every {data.sourceConfig.interval} {unitAbbrev}
                         </div>
                     )}
                 </div>
@@ -100,7 +111,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
           </div>
 
           <div className="p-4 min-h-[100px] flex flex-col gap-3">
-             
+
              {/* Simple Process Viz for Start Node */}
              <div className="flex gap-2 justify-center">
                  {processingItems.slice(0, 5).map((item) => (
@@ -131,7 +142,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
              {/* Stats Row */}
              <div className="flex gap-4 border-t border-slate-100 pt-2 mt-auto">
                  <div className="flex items-center gap-1 text-[10px] text-slate-500">
-                    <Clock size={10} /> {data.processingTime}t Time
+                    <Clock size={10} /> {data.processingTime} {unitAbbrev}
                  </div>
                  <div className="flex items-center gap-1 text-[10px] text-slate-500">
                     <Users size={10} /> {data.resources} Cap

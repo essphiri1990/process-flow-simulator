@@ -1,6 +1,6 @@
-import React, { memo } from 'react';
+import React, { memo, useRef } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { ProcessNodeData, ItemStatus } from '../types';
+import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../types';
 import { useStore } from '../store';
 import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2 } from 'lucide-react';
 
@@ -8,18 +8,68 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup instead of O(n) filter)
   const items = useStore((state) => state.itemsByNode.get(id) || []);
   const itemConfig = useStore((state) => state.itemConfig);
+  const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const deleteNode = useStore((state) => state.deleteNode);
+  const timeUnit = useStore((state) => state.timeUnit);
+  const tickCount = useStore((state) => state.tickCount);
+  const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
   // Separate queued and processing in single pass
   const queuedItems: typeof items = [];
   const processingItems: typeof items = [];
+  let leadTimeSum = 0;
   for (const item of items) {
+    if (item.status === ItemStatus.QUEUED || item.status === ItemStatus.PROCESSING) {
+      // Per-node lead time: time since the item entered this node
+      leadTimeSum += Math.max(0, tickCount - item.nodeEnterTick);
+    }
     if (item.status === ItemStatus.QUEUED) queuedItems.push(item);
     else if (item.status === ItemStatus.PROCESSING) processingItems.push(item);
   }
-  
-  // Create resource slots
-  const slots = Array.from({ length: data.resources });
+  const activeCount = queuedItems.length + processingItems.length;
+  const avgLeadTime = activeCount > 0 ? leadTimeSum / activeCount : 0;
+
+  const formatLeadTime = (ticks: number) => {
+    if (ticks <= 0) return '0m';
+    if (ticks < 60) return `${Math.round(ticks)}m`;
+    const hours = Math.floor(ticks / 60);
+    const mins = Math.round(ticks % 60);
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  };
+
+  // Stable slot assignment: each item keeps its slot for its entire processing lifetime.
+  // Without this, items shift left when another item finishes, making countdowns jump.
+  const slotMapRef = useRef<Map<string, number>>(new Map());
+  const slotMap = slotMapRef.current;
+
+  // Remove items no longer processing
+  const activeIds = new Set(processingItems.map(item => item.id));
+  for (const [itemId] of slotMap) {
+    if (!activeIds.has(itemId)) slotMap.delete(itemId);
+  }
+
+  // Assign new items to the lowest available slot
+  const usedSlots = new Set(slotMap.values());
+  for (const item of processingItems) {
+    if (!slotMap.has(item.id)) {
+      for (let s = 0; s < data.resources; s++) {
+        if (!usedSlots.has(s)) {
+          slotMap.set(item.id, s);
+          usedSlots.add(s);
+          break;
+        }
+      }
+    }
+  }
+
+  // Build slot-indexed array
+  const slots: (ProcessItem | null)[] = Array.from({ length: data.resources }, () => null);
+  for (const item of processingItems) {
+    const slotIdx = slotMap.get(item.id);
+    if (slotIdx !== undefined && slotIdx < slots.length) {
+      slots[slotIdx] = item;
+    }
+  }
 
   // Bottleneck & Validation Styles
   let borderColor = "border-slate-200";
@@ -85,7 +135,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       )}
 
       {/* Delete Button (On Hover) */}
-      <button 
+      <button
           onClick={handleDelete}
           className="absolute -top-3 -right-3 bg-white text-slate-400 border border-slate-200 hover:text-red-500 hover:border-red-500 p-1.5 rounded-full shadow-sm z-50 opacity-0 group-hover:opacity-100 transition-opacity"
           title="Delete Node"
@@ -116,7 +166,13 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       {/* Content Wrapper */}
       <div className="overflow-hidden rounded-[10px] w-full h-full">
           {/* Header */}
-          <div className="bg-slate-50 border-b border-slate-100 px-4 py-3 flex justify-between items-center relative">
+          <div
+            className="border-b px-4 py-3 flex justify-between items-center relative"
+            style={{
+              backgroundColor: (data.headerColor || defaultHeaderColor) + '40',
+              borderColor: (data.headerColor || defaultHeaderColor) + '60',
+            }}
+          >
              <div className="flex items-center gap-2">
                 {isSource && (
                     <div className="bg-purple-100 p-1 rounded-full text-purple-600 shadow-sm" title="Active Input Source">
@@ -126,8 +182,9 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                 <div>
                     <div className="font-bold text-slate-800">{data.label}</div>
                     <div className="flex gap-3 text-[10px] text-slate-500 font-medium uppercase tracking-wider mt-1">
-                        <span className="flex items-center gap-1"><Clock size={10} /> {data.processingTime}t</span>
+                        <span className="flex items-center gap-1"><Clock size={10} /> {data.processingTime} {unitAbbrev}</span>
                         <span className="flex items-center gap-1"><Users size={10} /> {data.resources}</span>
+                        <span className="flex items-center gap-1"><Clock size={10} className="text-amber-500" /> Lead {formatLeadTime(avgLeadTime)}</span>
                     </div>
                 </div>
              </div>
@@ -139,7 +196,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
           </div>
 
           <div className="p-4 bg-gradient-to-b from-white to-slate-50 min-h-[140px] flex flex-col gap-4">
-            
+
             {/* Processing Area (Slots) */}
             <div className="flex flex-col gap-2">
                 <div className="text-[10px] uppercase font-bold text-slate-400 flex justify-between">
@@ -147,14 +204,12 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                     <span>{processingItems.length}/{data.resources}</span>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
-                    {slots.map((_, idx) => {
-                        const item = processingItems[idx];
-                        // Safety: Ensure we don't display negative numbers or NaN
+                    {slots.map((item, idx) => {
                         const displayTime = item ? Math.max(0, Math.ceil(item.remainingTime)) : 0;
                         const displayProgress = item ? item.progress : 0;
 
                         return (
-                            <div key={idx} className="aspect-square rounded-lg bg-slate-100 border border-slate-200 shadow-inner flex items-center justify-center relative overflow-hidden">
+                            <div key={item?.id ?? `empty-${idx}`} className="aspect-square rounded-lg bg-slate-100 border border-slate-200 shadow-inner flex items-center justify-center relative overflow-hidden">
                                 {item ? (
                                     <div className="relative w-10 h-10 flex items-center justify-center">
                                         {/* Item Visual with CSS-based progress */}
@@ -196,9 +251,9 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                 </div>
                 <div className={`h-12 bg-slate-100/50 rounded-lg border border-dashed flex items-center px-2 gap-[-8px] overflow-hidden relative transition-colors duration-300 ${queuedItems.length >= 10 ? 'border-red-300 bg-red-50' : 'border-slate-300'}`}>
                     {queuedItems.length === 0 && <span className="text-[10px] text-slate-400 w-full text-center">Empty</span>}
-                    {queuedItems.map((item, i) => (
-                        <div 
-                            key={item.id} 
+                    {queuedItems.slice(0, 20).map((item, i) => (
+                        <div
+                            key={item.id}
                             className="w-5 h-5 shadow-sm flex-shrink-0 border border-white/50 -ml-2 first:ml-0 flex items-center justify-center text-white"
                             style={{
                                 backgroundColor: itemConfig.color,

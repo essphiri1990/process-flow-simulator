@@ -1,18 +1,21 @@
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { ProcessNodeData, ItemStatus } from '../types';
+import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev } from '../types';
 import { useStore } from '../store';
 import { CheckCircle2, Clock, AlertTriangle, Trash2 } from 'lucide-react';
 
 const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup)
   const items = useStore((state) => state.itemsByNode.get(id) || []);
+  const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const deleteNode = useStore((state) => state.deleteNode);
-  
+  const timeUnit = useStore((state) => state.timeUnit);
+  const unitAbbrev = getTimeUnitAbbrev(timeUnit);
+
   // Visual Styling
   let borderColor = "border-slate-800";
   let ringColor = "ring-slate-800/20";
-  
+
   if (selected) {
      ringColor = "ring-slate-800/40";
   }
@@ -55,7 +58,7 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       )}
 
       {/* Delete Button */}
-      <button 
+      <button
           onClick={handleDelete}
           className="absolute -top-3 -left-3 bg-slate-700 text-slate-300 border border-slate-600 hover:text-white hover:bg-red-600 p-1.5 rounded-full shadow-sm z-50 opacity-0 group-hover:opacity-100 transition-all"
           title="Delete Node"
@@ -69,10 +72,13 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       <Handle type="target" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
       <Handle type="target" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
 
-      <div className="overflow-hidden rounded-[10px] w-full h-full p-5 flex flex-col items-center text-center">
-          
+      {/* Color accent bar */}
+      <div className="w-full h-1 rounded-t-[10px]" style={{ backgroundColor: data.headerColor || defaultHeaderColor }} />
+
+      <div className="overflow-hidden rounded-b-[10px] w-full h-full p-5 flex flex-col items-center text-center">
+
           <h3 className="font-bold text-slate-300 uppercase tracking-widest text-xs mb-1">{data.label}</h3>
-          
+
           <div className="my-3">
               <div className="text-5xl font-mono font-bold text-white tracking-tighter">
                   {totalFinished}
@@ -82,7 +88,7 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
           <div className="w-full bg-slate-800 rounded-lg p-2 mt-2 flex justify-between items-center text-xs text-slate-400">
               <span className="flex items-center gap-1"><Clock size={12}/> Processing</span>
-              <span className="font-mono text-white">{data.processingTime}t</span>
+              <span className="font-mono text-white">{data.processingTime} {unitAbbrev}</span>
           </div>
       </div>
     </div>

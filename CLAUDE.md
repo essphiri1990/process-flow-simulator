@@ -38,9 +38,8 @@ process-flow-simulator/
 │   ├── EndNode.tsx          # Terminal/sink nodes
 │   ├── AnnotationNode.tsx   # Text note nodes
 │   ├── ProcessEdge.tsx      # Connection edges with routing info
-│   ├── Controls.tsx         # Playback controls (play/pause/step/speed)
+│   ├── Controls.tsx         # Bottom toolbar: playback, settings, VSM metrics
 │   ├── ConfigPanel.tsx      # Right-side node configuration panel
-│   ├── VSMStats.tsx         # Real-time VSM metrics display
 │   ├── SettingsModal.tsx    # Global item styling settings
 │   └── AnalyticsDashboard.tsx # Full analytics with charts
 ├── vite.config.ts       # Vite configuration
@@ -141,11 +140,11 @@ routingWeights: { 'nodeA': 1, 'nodeB': 4 } // 20% to A, 80% to B
 
 | Metric | Calculation |
 |--------|-------------|
-| Lead Time | Total time in system (`totalTime`) |
+| Lead Time | Active + waiting time (`timeActive + timeWaiting`) |
 | Value Added Time (VAT) | Processing time (`timeActive`) |
-| Non-Value Added Time (NVAT) | Queue + Transit time (`timeWaiting + timeTransit`) |
+| Non-Value Added Time (NVAT) | Queue time (`timeWaiting`) |
 | Process Cycle Efficiency (PCE) | `VAT / Lead Time * 100%` |
-| Throughput | Items completed per time window |
+| Throughput | Items completed per completion window (default 50) |
 | WIP | Items currently in system (not completed/failed) |
 
 ---
@@ -187,6 +186,7 @@ npm run preview                  # Preview production build
   totalTime: number              // Total ticks in system
   spawnTick: number
   completionTick: number | null
+  metricsEpoch: number           // Metrics epoch at spawn time (for resets)
   timeActive: number             // VSM: processing time
   timeWaiting: number            // VSM: queue time
   timeTransit: number            // VSM: transit time
@@ -215,9 +215,36 @@ npm run preview                  # Preview production build
 - Use Zustand `get()` for reading state in actions
 - Scenarios are deep-copied when loaded to prevent mutation
 - Nodes use ReactFlow's coordinate system (position relative to canvas)
-- Transit duration is fixed at 20 ticks
+- Transit duration is distance-based or edge-override (not included in VSM lead time calculations)
 - History records every 5 ticks, max 500 entries
 - Quality check happens when processing completes, not when starting
+
+---
+
+## UI Quality Standards
+
+Every feature must be implemented with attention to layout stability, clarity, and polish. These rules are non-negotiable:
+
+### Layout Stability
+
+- **No layout shifts**: UI elements must never cause surrounding content to resize, reflow, or jump when state changes. Use fixed widths/heights for containers whose children change dynamically (e.g. toggle labels, stat values, play/pause buttons).
+- **Fixed-width containers for dynamic content**: Any element that displays changing values (numbers, text that toggles) must use a fixed `w-[Npx]` instead of `min-w` or auto-width. This prevents the toolbar and surrounding elements from shifting as values grow/shrink.
+- **Always-render, visually-hide pattern**: Prefer making elements invisible (`opacity-0`, `text-transparent`, `pointer-events-none`) over conditionally removing them from the DOM. Conditional rendering (`{condition && <div>}`) causes parent containers to resize.
+- **Single-element state swaps**: When an element changes between states (e.g. Run/Pause button), use a single element that swaps its content rather than conditionally rendering different elements. This keeps the container size constant.
+
+### Node Layout (Scenarios)
+
+- **Spacing**: Nodes are 256-288px wide (`w-64` to `w-72`). Horizontal spacing between nodes must be at least 400px to leave visible room for edge connectors.
+- **Left-to-right flow**: Process flows must read left-to-right. Items enter nodes on the left handle and exit on the right.
+- **Branching lanes**: When a process branches (e.g. pass/fail, triage split), use distinct vertical lanes with enough vertical separation (250-300px) so edges don't overlap nodes.
+- **Annotations below**: Annotation nodes should be placed well below the process flow (150-200px gap) so they don't crowd working nodes.
+
+### Visual Clarity
+
+- **Self-evident states**: Don't add redundant labels for obvious states (e.g. no "Off" label on a clearly-off toggle).
+- **Color-coded metrics**: Each metric type gets a consistent, distinct color across the UI (e.g. PCE = emerald, Lead = amber, Throughput = purple, WIP = blue).
+- **Monospace for values**: All numeric/metric values use `font-mono` for consistent character widths, preventing micro-shifts as digits change.
+- **Tooltips over labels**: Prefer hover tooltips for secondary information rather than always-visible labels that clutter the UI.
 
 ---
 
@@ -265,3 +292,40 @@ const items = useStore((state) => state.itemsByNode.get(id) || []);
 // Avoid: O(n) filter on every render
 const items = useStore((state) => state.items.filter(i => i.currentNodeId === id));
 ```
+
+### Time Model (Single Source of Truth)
+
+- 1 tick = 1 simulated minute. `tickCount` is the only time axis; arrivals, processing, transit, analytics, and the display clock all derive from it.
+- Display clock: `displayTickCount = computeDisplayTickCount(tickCount, cumulativeTransitTicks, policy)`. When `countTransitInClock=false`, only ticks where *all* active items are in TRANSIT are excluded (tracked via `isTransitOnlyTick` in `store.ts`).
+- Transit: auto duration is distance-based 5–30 ticks via `computeTransitDuration`; per-edge `data.transitTime` overrides when >0. Transit animation remains unchanged.
+- Scheduler: `components/Controls.tsx` uses fractional batching (`computeSchedule`) capped at 60 Hz with an accumulator; max-speed mode uses `requestAnimationFrame` with a 300-tick safety cap per frame. Goal: actual `tick()` calls per second ≈ configured `ticksPerSecond`.
+- State fields updated every tick: `cumulativeTransitTicks`, `displayTickCount`, `countTransitInClock`, `simulationProgress`, `ticksPerSecond`, `speedPreset`.
+- Metrics: lead time, VAT/NVAT, PCE, throughput (completion-window, default 50 completions) and WIP all derive from per-tick item timers and `tickCount`; transit is excluded from lead/PCE/throughput.
+- Tests: `tests/scheduler.test.ts`, `tests/store.test.ts` cover scheduler accuracy, clock advancement, transit-only handling, lead/VAT/NVAT sums, throughput window alignment, policy toggle, and PCE sanity. Run with `npm test`.
+
+### Demand-Driven Simulation
+
+- Demand mode allows exact arrivals per hour/day/week/month over a bounded period (working hours model).
+- Deterministic fractional accumulator ensures arrivals match the target exactly.
+- Per-node working hours (hours/day, days/week) gate both demand arrivals and processing.
+- Demand is configured per start node (not evenly split).
+- See `PLAN-DEMAND-DRIVEN-SIMULATION.md` for the full implementation plan.
+
+### Clock Semantics (NON-NEGOTIABLE)
+
+The display clock represents **elapsed simulated time**, while lead time represents **per‑item time in system** (active + waiting). These are related but not identical, and the UI must label them clearly so executives don’t confuse timeline with item experience.
+
+**Rules:**
+
+- The clock must never freeze or get stuck at a constant value while items are actively processing and flowing.
+- The clock must advance on every tick where any item is being processed or waiting in a queue. A tick only counts as "transit-only" (excluded from display clock when `countTransitInClock=false`) if ALL active items are exclusively in transit and nothing else is happening.
+- The clock is the system timeline; lead time is a separate KPI. Do not force them to match.
+- Transit animation between nodes is a **non-negotiable visual feature** — it adds significant value by making the simulation feel alive. Any clock fix must preserve the visual transit animation untouched. The transit animation (items visually moving between nodes) is decoupled from clock accounting.
+- The `cumulativeTransitTicks` counter must NOT grow at the same rate as `tickCount` during steady-state flow. If it does, `displayTickCount = tickCount - cumulativeTransitTicks` becomes constant and the clock freezes.
+
+**Implementation detail (store.ts tick function):**
+
+- `hasTransitThisStep`: true if any item is in TRANSIT this tick.
+- `hasNonTransitActiveItem`: true if any item is PROCESSING or QUEUED this tick.
+- `isTransitOnlyTick = hasTransitThisStep && !hasNonTransitActiveItem` — only this combination increments `cumulativeTransitTicks`.
+- This ensures the clock advances whenever productive work is happening, and only pauses when the entire system is idle waiting for transit to complete.

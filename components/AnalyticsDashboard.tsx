@@ -1,8 +1,9 @@
 import React, { memo, useMemo } from 'react';
 import { useStore } from '../store';
 import { X, TrendingUp, Activity, BarChart3, Clock, CheckCircle2, Gauge, AlertTriangle } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { DURATION_PRESETS, TICKS_PER_HOUR, TICKS_PER_WORKDAY, TICKS_PER_WEEK } from '../types';
+
+import { DURATION_PRESETS, TICKS_PER_HOUR, TICKS_PER_WORKDAY, TICKS_PER_WEEK, ItemStatus } from '../types';
+import { computeLeadMetrics, formatCompletionWindowLabel } from '../metrics';
 
 interface AnalyticsDashboardProps {
   onClose: () => void;
@@ -35,13 +36,47 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   const isRunning = useStore((state) => state.isRunning);
   const nodes = useStore((state) => state.nodes);
   const items = useStore((state) => state.items);
-  const tickCount = useStore((state) => state.tickCount);
+  const displayTickCount = useStore((state) => state.displayTickCount);
   const durationPreset = useStore((state) => state.durationPreset);
   const targetDuration = useStore((state) => state.targetDuration);
   const simulationProgress = useStore((state) => state.simulationProgress);
+  const metricsWindowCompletions = useStore((state) => state.metricsWindowCompletions);
+  const metricsEpoch = useStore((state) => state.metricsEpoch);
+  const throughput = useStore((state) => state.throughput);
+  const itemCounts = useStore((state) => state.itemCounts);
+  const demandMode = useStore((state) => state.demandMode);
+  const demandUnit = useStore((state) => state.demandUnit);
+  const demandArrivalsGenerated = useStore((state) => state.demandArrivalsGenerated);
+  const periodCompleted = useStore((state) => state.periodCompleted);
 
   // Get adaptive display configuration
-  const displayConfig = useMemo(() => getDisplayConfig(durationPreset, tickCount), [durationPreset, tickCount]);
+  const displayConfig = useMemo(() => getDisplayConfig(durationPreset, displayTickCount), [durationPreset, displayTickCount]);
+
+  // End-to-end lead time & PCE (matches toolbar logic: only items that reached an end node)
+  const leadMetrics = useMemo(
+    () => computeLeadMetrics(items, {
+      windowSize: metricsWindowCompletions,
+      metricsEpoch
+    }),
+    [items, metricsWindowCompletions, metricsEpoch]
+  );
+  const lowSample = leadMetrics.sampleSize < 5;
+  const windowLabel = formatCompletionWindowLabel(metricsWindowCompletions);
+
+  const demandTotals = useMemo(() => {
+    let total = 0;
+    const perNode: { id: string; label: string; target: number }[] = [];
+    for (const node of nodes) {
+      if (node.type === 'startNode') {
+        const target = (node.data as any).demandTarget || 0;
+        if (target > 0) {
+          total += target;
+          perNode.push({ id: node.id, label: (node.data as any).label || 'Start', target });
+        }
+      }
+    }
+    return { total, perNode };
+  }, [nodes]);
 
   // Calculate summary statistics
   const stats = useMemo(() => {
@@ -124,7 +159,7 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
               Performance Analytics
             </h2>
             <p className="text-xs text-slate-500">
-              Real-time simulation metrics • {formatTime(tickCount)} {displayConfig.unitName} elapsed
+              Real-time simulation metrics • {formatTime(displayTickCount)} {displayConfig.unitName} elapsed
               {isRunning && <span className="ml-2 inline-flex items-center gap-1 text-emerald-600 font-bold animate-pulse">● Live</span>}
             </p>
           </div>
@@ -155,8 +190,52 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50">
 
+          {demandMode === 'target' && (
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                  <BarChart3 size={16} className="text-slate-500" />
+                  End-of-Period Demand Report
+                </h3>
+                <span className="text-xs text-slate-400 uppercase">
+                  per {demandUnit}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Target Arrivals</div>
+                  <div className="text-xl font-bold text-slate-700">{demandTotals.total}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Arrivals Generated</div>
+                  <div className="text-xl font-bold text-blue-600">{demandArrivalsGenerated}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Completed</div>
+                  <div className="text-xl font-bold text-emerald-600">{periodCompleted}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Backlog (WIP)</div>
+                  <div className="text-xl font-bold text-amber-600">{itemCounts.wip}</div>
+                </div>
+              </div>
+              {demandTotals.perNode.length > 0 && (
+                <div className="mt-3 text-xs text-slate-500">
+                  <div className="font-semibold text-slate-600 mb-1">Per-start-node targets</div>
+                  <div className="flex flex-wrap gap-2">
+                    {demandTotals.perNode.map((n) => (
+                      <span key={n.id} className="px-2 py-0.5 bg-slate-100 border border-slate-200 rounded">
+                        {n.label}: {n.target}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Summary Statistics */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <div className="flex items-center gap-2 text-slate-500 mb-1">
                 <Gauge size={14} />
@@ -164,6 +243,9 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
               </div>
               <div className="text-2xl font-bold text-blue-600">{stats.currentWip}</div>
               <div className="text-xs text-slate-400">Peak: {stats.peakWip}</div>
+              <div className="text-xs text-slate-400 mt-1">
+                Q {itemCounts.queued} · P {itemCounts.processing} · T {itemCounts.transit} · S {itemCounts.stuck}
+              </div>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -180,8 +262,13 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                 <Activity size={14} />
                 <span className="text-xs font-bold uppercase">Throughput</span>
               </div>
-              <div className="text-2xl font-bold text-purple-600">{stats.avgThroughput.toFixed(1)}</div>
-              <div className="text-xs text-slate-400">per 100 {displayConfig.unitName}</div>
+              <div className={`text-2xl font-bold ${lowSample ? 'text-slate-400' : 'text-purple-600'}`}>
+                {throughput.toFixed(1)}
+              </div>
+              <div className="text-xs text-slate-400">
+                items / hour • n={leadMetrics.sampleSize} • {windowLabel}
+              </div>
+              <div className="text-xs text-slate-400">avg: {stats.avgThroughput.toFixed(1)}</div>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -192,111 +279,29 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
               <div className="text-2xl font-bold text-amber-600">{stats.avgWip.toFixed(1)}</div>
               <div className="text-xs text-slate-400">Items in system</div>
             </div>
-          </div>
 
-          {/* Charts Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-            {/* Chart 1: WIP Over Time */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
-                <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                Work In Progress (WIP)
-              </h3>
-              <div style={{ width: '100%', height: 200 }}>
-                <ResponsiveContainer>
-                  <AreaChart data={history}>
-                    <defs>
-                      <linearGradient id="wipGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#2563eb" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis
-                      dataKey="tick"
-                      stroke="#94a3b8"
-                      tick={{fontSize: 10}}
-                      tickFormatter={(v) => formatTime(v)}
-                      label={{ value: `Time (${displayConfig.unitName})`, position: 'insideBottom', offset: -5, fontSize: 10 }}
-                    />
-                    <YAxis stroke="#94a3b8" tick={{fontSize: 10}} />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '12px' }}
-                      labelFormatter={(v) => `Time: ${formatTime(Number(v))} ${displayConfig.abbrev}`}
-                      formatter={(value: number) => [value, 'WIP']}
-                    />
-                    <Area type="monotone" dataKey="wip" stroke="#2563eb" strokeWidth={2} fill="url(#wipGradient)" />
-                  </AreaChart>
-                </ResponsiveContainer>
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <Clock size={14} />
+                <span className="text-xs font-bold uppercase">Lead Time</span>
               </div>
-              <p className="text-xs text-slate-400 mt-2">Rising WIP indicates a bottleneck forming in the system.</p>
+              <div className={`text-2xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-amber-600'}`}>
+                {formatTime(leadMetrics.avgLeadTime)}
+              </div>
+              <div className="text-xs text-slate-400">Queue + processing (transit excluded)</div>
+              <div className="text-xs text-slate-400">n={leadMetrics.sampleSize} • {windowLabel}</div>
             </div>
 
-            {/* Chart 2: Throughput Rate */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
-                <div className="w-3 h-3 bg-emerald-500 rounded-full"></div>
-                Throughput Rate
-              </h3>
-              <div style={{ width: '100%', height: 200 }}>
-                <ResponsiveContainer>
-                  <LineChart data={history}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis
-                      dataKey="tick"
-                      stroke="#94a3b8"
-                      tick={{fontSize: 10}}
-                      tickFormatter={(v) => formatTime(v)}
-                      label={{ value: `Time (${displayConfig.unitName})`, position: 'insideBottom', offset: -5, fontSize: 10 }}
-                    />
-                    <YAxis stroke="#94a3b8" tick={{fontSize: 10}} />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '12px' }}
-                      labelFormatter={(v) => `Time: ${formatTime(Number(v))} ${displayConfig.abbrev}`}
-                      formatter={(value: number) => [value.toFixed(2), `Items/100${displayConfig.abbrev}`]}
-                    />
-                    <Line type="monotone" dataKey="throughput" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-                  </LineChart>
-                </ResponsiveContainer>
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <Activity size={14} />
+                <span className="text-xs font-bold uppercase">PCE</span>
               </div>
-              <p className="text-xs text-slate-400 mt-2">Rate of completed items. Higher is better.</p>
-            </div>
-
-            {/* Chart 3: Cumulative Completed */}
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm lg:col-span-2">
-              <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
-                <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
-                Cumulative Output
-              </h3>
-              <div style={{ width: '100%', height: 200 }}>
-                <ResponsiveContainer>
-                  <AreaChart data={history}>
-                    <defs>
-                      <linearGradient id="completedGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis
-                      dataKey="tick"
-                      stroke="#94a3b8"
-                      tick={{fontSize: 10}}
-                      tickFormatter={(v) => formatTime(v)}
-                      label={{ value: `Time (${displayConfig.unitName})`, position: 'insideBottom', offset: -5, fontSize: 10 }}
-                    />
-                    <YAxis stroke="#94a3b8" tick={{fontSize: 10}} />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '12px' }}
-                      labelFormatter={(v) => `Time: ${formatTime(Number(v))} ${displayConfig.abbrev}`}
-                      formatter={(value: number) => [value, 'Total Completed']}
-                    />
-                    <Area type="monotone" dataKey="totalCompleted" stroke="#8b5cf6" strokeWidth={2} fill="url(#completedGradient)" />
-                  </AreaChart>
-                </ResponsiveContainer>
+              <div className={`text-2xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-emerald-600'}`}>
+                {leadMetrics.pce.toFixed(0)}%
               </div>
-              <p className="text-xs text-slate-400 mt-2">Total items that have completed the process over time. A steeper slope indicates higher productivity.</p>
+              <div className="text-xs text-slate-400">Value-added efficiency</div>
+              <div className="text-xs text-slate-400">n={leadMetrics.sampleSize} • {windowLabel}</div>
             </div>
           </div>
 
