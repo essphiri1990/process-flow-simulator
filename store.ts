@@ -43,6 +43,7 @@ import {
 import { showToast } from './components/Toast';
 import * as canvasStorage from './canvas-storage';
 import { computeThroughputFromCompletions } from './metrics';
+import { getProcessBoxSdk } from './processBoxSdk';
 
 // Simple UUID generator
 const generateId = () => {
@@ -113,10 +114,7 @@ const shouldResetMetricsForNodeData = (
 
 const buildMetricsReset = (state: SimulationState) => ({
   metricsEpoch: state.metricsEpoch + 1,
-  metricsEpochTick: state.tickCount,
-  throughput: 0,
-  history: [],
-  cumulativeCompleted: 0
+  metricsEpochTick: state.tickCount
 });
 
 const getDemandDurationPreset = (unit: DemandUnit): string => {
@@ -161,6 +159,22 @@ const getNextNodeId = (sourceNode: ProcessNode | StartNode, nodes: AppNode[], ed
 
 const SCENARIOS = {
   'empty': { nodes: [], edges: [] },
+  'coffee': {
+    nodes: [
+      { id: 'coffee-start', type: 'startNode', position: { x: 80, y: 180 }, data: { label: 'Customer Order', processingTime: 1, resources: 1, quality: 1.0, variability: 0, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {}, sourceConfig: { enabled: true, interval: 6, batchSize: 1 } } },
+      { id: 'coffee-grind', type: 'processNode', position: { x: 460, y: 180 }, data: { label: 'Grind Beans', processingTime: 3, resources: 1, quality: 1.0, variability: 0.05, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'coffee-brew', type: 'processNode', position: { x: 840, y: 180 }, data: { label: 'Brew Coffee', processingTime: 6, resources: 1, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'coffee-serve', type: 'processNode', position: { x: 1220, y: 180 }, data: { label: 'Serve Cup', processingTime: 2, resources: 1, quality: 1.0, variability: 0, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'coffee-end', type: 'endNode', position: { x: 1600, y: 180 }, data: { label: 'Customer Served', processingTime: 0, resources: 999, quality: 1.0, variability: 0, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'coffee-note', type: 'annotationNode', position: { x: 840, y: 420 }, data: { label: 'Lead = queue + processing time. Transit is visual-only for VSM metrics.' } },
+    ],
+    edges: [
+      { id: 'c1', source: 'coffee-start', target: 'coffee-grind', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'c2', source: 'coffee-grind', target: 'coffee-brew', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'c3', source: 'coffee-brew', target: 'coffee-serve', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'c4', source: 'coffee-serve', target: 'coffee-end', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
+    ]
+  },
   'devops': {
     nodes: [
       { id: 'start', type: 'startNode', position: { x: 50, y: 150 }, data: { label: 'Backlog Input', processingTime: 2, resources: 1, quality: 1.0, variability: 0, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {}, sourceConfig: { enabled: true, interval: 20, batchSize: 1 } } },
@@ -352,7 +366,9 @@ export const useStore = create<SimulationState>((set, get) => ({
   setEdges: (edges) => set({ edges }),
   setItemConfig: (config) => set(state => ({ itemConfig: { ...state.itemConfig, ...config } })),
   setDefaultHeaderColor: (color) => set({ defaultHeaderColor: color }),
-  setTimeUnit: (unit) => set({ timeUnit: unit }),
+  // Time base is fixed to 1 tick = 1 simulated minute.
+  // Keep this action for API compatibility with older UI code.
+  setTimeUnit: () => set({ timeUnit: 'minutes' }),
   setMetricsWindowCompletions: (count) => {
     if (!Number.isFinite(count) || count <= 0) return;
     set({ metricsWindowCompletions: Math.round(count) });
@@ -710,6 +726,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       timeActive: 0,
       timeWaiting: 0,
       timeTransit: 0,
+      nodeLeadTime: 0,
       spawnTick: currentTick,
       completionTick: null,
       terminalNodeId: null,
@@ -726,6 +743,25 @@ export const useStore = create<SimulationState>((set, get) => ({
     const flow = { nodes, edges, itemConfig, defaultHeaderColor, durationPreset, speedPreset, autoStopEnabled, countTransitInClock, metricsWindowCompletions, demandMode, demandUnit };
     localStorage.setItem('processFlowData', JSON.stringify(flow));
     showToast('success', 'Flow saved to browser storage');
+
+    const sdk = getProcessBoxSdk();
+    if (sdk?.isEmbedded) {
+      void sdk
+        .createCloudSave({
+          note: `Flow snapshot (${new Date().toLocaleString()})`,
+          state: flow as unknown as Record<string, unknown>,
+          tier: 'registered',
+        })
+        .catch(() => {
+          showToast('warning', 'Cloud save unavailable. Local save still succeeded.');
+        });
+
+      void sdk.trackAppCompleted({
+        action: 'save_flow',
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+      });
+    }
   },
 
   loadFlow: () => {
@@ -778,6 +814,68 @@ export const useStore = create<SimulationState>((set, get) => ({
           showToast('success', 'Flow loaded successfully');
       }
     } else {
+        const sdk = getProcessBoxSdk();
+        if (sdk?.isEmbedded) {
+          void sdk
+            .listCloudSaves(1)
+            .then((payload) => {
+              const latest = payload?.saves?.[0]?.state_json;
+              if (!latest?.nodes || !latest?.edges) {
+                showToast('warning', 'No saved flow found locally or in cloud.');
+                return;
+              }
+
+              const durationConfig = DURATION_PRESETS[latest.durationPreset] || DURATION_PRESETS.unlimited;
+              const speedConfig = SPEED_PRESETS.find((s) => s.key === latest.speedPreset) || SPEED_PRESETS[1];
+              const demandMode = (latest.demandMode as DemandMode) || 'auto';
+              const demandUnit = (latest.demandUnit as DemandUnit) || 'week';
+
+              set({
+                nodes: latest.nodes,
+                edges: latest.edges,
+                itemConfig: latest.itemConfig || get().itemConfig,
+                defaultHeaderColor: latest.defaultHeaderColor || get().defaultHeaderColor,
+                durationPreset: latest.durationPreset || 'unlimited',
+                targetDuration: durationConfig.totalTicks,
+                speedPreset: latest.speedPreset || '1x',
+                ticksPerSecond: speedConfig.ticksPerSecond,
+                autoStopEnabled: latest.autoStopEnabled !== undefined ? latest.autoStopEnabled : true,
+                countTransitInClock: latest.countTransitInClock !== undefined ? latest.countTransitInClock : DEFAULT_CLOCK_POLICY.countTransitInClock,
+                metricsWindowCompletions: Number.isFinite(latest.metricsWindowCompletions)
+                  ? latest.metricsWindowCompletions
+                  : get().metricsWindowCompletions,
+                demandMode,
+                demandUnit,
+                demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
+                items: [],
+                isRunning: false,
+                tickCount: 0,
+                displayTickCount: 0,
+                cumulativeTransitTicks: 0,
+                cumulativeCompleted: 0,
+                throughput: 0,
+                simulationProgress: 0,
+                history: [],
+                metricsEpoch: 0,
+                metricsEpochTick: 0,
+                demandArrivalsGenerated: 0,
+                demandArrivalsByNode: {},
+                demandAccumulatorByNode: {},
+                demandOpenTicksByNode: {},
+                periodCompleted: 0,
+                itemsByNode: new Map(),
+                itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+              });
+
+              localStorage.setItem('processFlowData', JSON.stringify(latest));
+              showToast('success', 'Loaded flow from cloud save.');
+            })
+            .catch(() => {
+              showToast('warning', 'No saved flow found.');
+            });
+          return;
+        }
+
         showToast('warning', 'No saved flow found');
     }
   },
@@ -1158,6 +1256,7 @@ export const useStore = create<SimulationState>((set, get) => ({
                   timeActive: 0,
                   timeWaiting: 0,
                   timeTransit: 0,
+                  nodeLeadTime: 0,
                   spawnTick: tickCount,
                   completionTick: null,
                   terminalNodeId: null,
@@ -1193,6 +1292,7 @@ export const useStore = create<SimulationState>((set, get) => ({
                   timeActive: 0,
                   timeWaiting: 0,
                   timeTransit: 0,
+                  nodeLeadTime: 0,
                   spawnTick: tickCount,
                   completionTick: null,
                   terminalNodeId: null,
@@ -1214,6 +1314,12 @@ export const useStore = create<SimulationState>((set, get) => ({
       let newlyCompletedInEpoch = 0;
       let hasTransitThisStep = false;
       let hasNonTransitActiveItem = false;
+
+      const registerCompletion = (item: ProcessItem) => {
+        if (item.terminalNodeId === null) return;
+        newlyCompleted++;
+        if (item.metricsEpoch === metricsEpoch) newlyCompletedInEpoch++;
+      };
 
       // Initialize processing counts
       for (const node of nodes) {
@@ -1245,11 +1351,6 @@ export const useStore = create<SimulationState>((set, get) => ({
 
       // Process items - mutate in place for performance
       for (const item of allItems) {
-        // Only increment totalTime for active items (not already finished)
-        if (item.status !== ItemStatus.COMPLETED && item.status !== ItemStatus.FAILED) {
-          item.totalTime++;
-        }
-
         if (item.status === ItemStatus.PROCESSING && item.currentNodeId) {
           hasNonTransitActiveItem = true;
           const node = nodeMap.get(item.currentNodeId);
@@ -1259,6 +1360,8 @@ export const useStore = create<SimulationState>((set, get) => ({
             const pData = node.data as ProcessNodeData;
             item.remainingTime--;
             item.timeActive++;
+            item.nodeLeadTime++;
+            item.totalTime++;
 
             const totalDuration = item.processingDuration || pData.processingTime;
             item.progress = totalDuration > 0
@@ -1291,8 +1394,7 @@ export const useStore = create<SimulationState>((set, get) => ({
                     item.currentNodeId = null;
                   item.completionTick = tickCount;
                   item.terminalNodeId = node.type === 'endNode' ? node.id : null;
-                  newlyCompleted++;
-                  if (item.metricsEpoch === metricsEpoch) newlyCompletedInEpoch++;
+                  registerCompletion(item);
                 }
               } else {
                 item.status = ItemStatus.FAILED;
@@ -1305,6 +1407,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         } else if (item.status === ItemStatus.TRANSIT) {
           item.remainingTime--;
           item.timeTransit++;
+          item.totalTime++;
           hasTransitThisStep = true;
           // Use stored processingDuration for accurate progress (distance-based transit)
           const transitDuration = item.processingDuration || 10;
@@ -1316,16 +1419,10 @@ export const useStore = create<SimulationState>((set, get) => ({
             item.progress = 0;
             item.transitProgress = 0;
             item.nodeEnterTick = tickCount;
+            item.nodeLeadTime = 0;
           }
         } else if (item.status === ItemStatus.QUEUED) {
           hasNonTransitActiveItem = true;
-          if (item.currentNodeId) {
-            const node = nodeMap.get(item.currentNodeId);
-            if (node && node.type !== 'annotationNode') {
-              const isWorking = workingStatus.get(node.id) ?? true;
-              if (isWorking) item.timeWaiting++;
-            }
-          }
         }
         // Note: already-completed items are pre-counted above, not here
       }
@@ -1373,8 +1470,7 @@ export const useStore = create<SimulationState>((set, get) => ({
                     item.currentNodeId = null;
                     item.completionTick = tickCount;
                     item.terminalNodeId = node.type === 'endNode' ? node.id : null;
-                    newlyCompleted++;
-                    if (item.metricsEpoch === metricsEpoch) newlyCompletedInEpoch++;
+                    registerCompletion(item);
                   }
                   item.progress = 100;
                   stats.processed++;
@@ -1397,6 +1493,19 @@ export const useStore = create<SimulationState>((set, get) => ({
             }
           }
         }
+      }
+
+      // Queue waiting is counted only for items that remain queued after assignment.
+      // This avoids adding an artificial +1 wait tick when capacity is immediately available.
+      for (const item of allItems) {
+        if (item.status !== ItemStatus.QUEUED || !item.currentNodeId) continue;
+        const node = nodeMap.get(item.currentNodeId);
+        if (!node || node.type === 'annotationNode') continue;
+        const isWorking = workingStatus.get(node.id) ?? true;
+        if (!isWorking) continue;
+        item.timeWaiting++;
+        item.nodeLeadTime++;
+        item.totalTime++;
       }
 
       // --- THROUGHPUT (rolling time window, aligned with lead metrics) ---

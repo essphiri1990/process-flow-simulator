@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { initProcessBoxSdk } from './processBoxSdk';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -8,6 +9,12 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+
+const processBoxSdk = initProcessBoxSdk('process-flow-simulator');
+void processBoxSdk?.trackAppOpened({
+  source: 'process-flow-simulator',
+});
+
 root.render(
   <React.StrictMode>
     <App />
