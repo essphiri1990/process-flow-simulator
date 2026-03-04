@@ -123,6 +123,95 @@ describe('processBoxSdk client', () => {
     await expect(requestPromise).resolves.toEqual({ saveId: 'save_1' });
   });
 
+  it('posts score history run requests to the host bridge when embedded', async () => {
+    const mockWindow = createMockWindow({ embedded: true, hostOrigin: 'https://platform.example' });
+    setGlobal('window', mockWindow);
+    setGlobal('document', { referrer: '' });
+
+    const { initProcessBoxSdk } = await loadSdkModule();
+    const client = initProcessBoxSdk('process-flow-simulator');
+
+    const requestPromise = client!.logScoreRun({
+      score: 44,
+      durationMs: 15000,
+      outcome: 'design_saved',
+      metadata: { nodeCount: 7, edgeCount: 6 },
+    });
+
+    expect((mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage).toHaveBeenCalledTimes(1);
+    const [requestEnvelope, targetOrigin] =
+      (mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage.mock.calls[0];
+
+    expect(targetOrigin).toBe('https://platform.example');
+    expect(requestEnvelope.method).toBe('history.run.log');
+    expect(requestEnvelope.payload.appId).toBe('process-flow-simulator');
+    expect(requestEnvelope.payload.score).toBe(44);
+
+    mockWindow.dispatchHostMessage('https://platform.example', {
+      channel: 'process-box-sdk',
+      version: '1.0',
+      kind: 'response',
+      requestId: requestEnvelope.requestId,
+      ok: true,
+      result: { runId: 'run_1' },
+      error: null,
+    });
+
+    await expect(requestPromise).resolves.toEqual({ runId: 'run_1' });
+  });
+
+  it('posts cloud save delete/clear requests to the host bridge when embedded', async () => {
+    const mockWindow = createMockWindow({ embedded: true, hostOrigin: 'https://platform.example' });
+    setGlobal('window', mockWindow);
+    setGlobal('document', { referrer: '' });
+
+    const { initProcessBoxSdk } = await loadSdkModule();
+    const client = initProcessBoxSdk('process-flow-simulator');
+
+    const deletePromise = client!.deleteCloudSave('save_99');
+    expect((mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage).toHaveBeenCalledTimes(1);
+    const [deleteEnvelope, deleteTargetOrigin] =
+      (mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage.mock.calls[0];
+
+    expect(deleteTargetOrigin).toBe('https://platform.example');
+    expect(deleteEnvelope.method).toBe('cloudSaves.delete');
+    expect(deleteEnvelope.payload.appId).toBe('process-flow-simulator');
+    expect(deleteEnvelope.payload.saveId).toBe('save_99');
+
+    mockWindow.dispatchHostMessage('https://platform.example', {
+      channel: 'process-box-sdk',
+      version: '1.0',
+      kind: 'response',
+      requestId: deleteEnvelope.requestId,
+      ok: true,
+      result: { deleted: true },
+      error: null,
+    });
+
+    await expect(deletePromise).resolves.toEqual({ deleted: true });
+
+    const clearPromise = client!.clearCloudSaves();
+    expect((mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage).toHaveBeenCalledTimes(2);
+    const [clearEnvelope, clearTargetOrigin] =
+      (mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage.mock.calls[1];
+
+    expect(clearTargetOrigin).toBe('https://platform.example');
+    expect(clearEnvelope.method).toBe('cloudSaves.clear');
+    expect(clearEnvelope.payload.appId).toBe('process-flow-simulator');
+
+    mockWindow.dispatchHostMessage('https://platform.example', {
+      channel: 'process-box-sdk',
+      version: '1.0',
+      kind: 'response',
+      requestId: clearEnvelope.requestId,
+      ok: true,
+      result: { deletedCount: 4 },
+      error: null,
+    });
+
+    await expect(clearPromise).resolves.toEqual({ deletedCount: 4 });
+  });
+
   it('rejects requests outside embedded mode', async () => {
     const mockWindow = createMockWindow({ embedded: false });
     setGlobal('window', mockWindow);

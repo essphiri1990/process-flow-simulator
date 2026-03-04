@@ -4,6 +4,14 @@ type SavePayload = {
   tier?: 'guest' | 'registered' | 'premium';
 };
 
+type ScoreRunPayload = {
+  score: number;
+  durationMs?: number | null;
+  outcome?: string;
+  sessionId?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 type RequestEnvelope = {
   channel: 'process-box-sdk';
   version: '1.0';
@@ -65,6 +73,11 @@ export type ProcessBoxSdkClient = {
   trackAppCompleted(payload?: Record<string, unknown>): Promise<unknown>;
   listCloudSaves(limit?: number): Promise<any>;
   createCloudSave(payload: SavePayload): Promise<any>;
+  deleteCloudSave(saveId: string): Promise<any>;
+  clearCloudSaves(): Promise<any>;
+  logScoreRun(payload: ScoreRunPayload): Promise<any>;
+  listScoreHistory(limit?: number): Promise<any>;
+  getScoreHistoryBest(): Promise<any>;
 };
 
 let singleton: ProcessBoxSdkClient | null = null;
@@ -145,6 +158,21 @@ function createClient(appId: string): ProcessBoxSdkClient {
     },
     createCloudSave(payload) {
       return request('cloudSaves.create', payload || {});
+    },
+    deleteCloudSave(saveId) {
+      return request('cloudSaves.delete', { saveId });
+    },
+    clearCloudSaves() {
+      return request('cloudSaves.clear');
+    },
+    logScoreRun(payload) {
+      return request('history.run.log', payload || {});
+    },
+    listScoreHistory(limit = 25) {
+      return request('history.run.list', { limit });
+    },
+    getScoreHistoryBest() {
+      return request('history.best.get');
     },
   };
 }
