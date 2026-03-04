@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Play, Zap, MousePointer2, BarChart2, ArrowRight, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { Play, Zap, MousePointer2, BarChart2, ArrowRight, X, Coffee } from 'lucide-react';
 
 const ONBOARDING_KEY = 'processFlowSim_onboardingComplete';
 
@@ -28,9 +28,10 @@ const steps = [
 
 interface OnboardingProps {
   onDismiss: () => void;
+  onQuickStart?: () => void;
 }
 
-const Onboarding: React.FC<OnboardingProps> = ({ onDismiss }) => {
+const Onboarding: React.FC<OnboardingProps> = ({ onDismiss, onQuickStart }) => {
   const [currentStep, setCurrentStep] = useState(0);
 
   const handleComplete = () => {
@@ -44,6 +45,11 @@ const Onboarding: React.FC<OnboardingProps> = ({ onDismiss }) => {
     } else {
       handleComplete();
     }
+  };
+
+  const handleQuickStart = () => {
+    if (onQuickStart) onQuickStart();
+    handleComplete();
   };
 
   return (
@@ -97,6 +103,16 @@ const Onboarding: React.FC<OnboardingProps> = ({ onDismiss }) => {
             ))}
           </div>
           <div className="flex gap-2">
+            {onQuickStart && (
+              <button
+                onClick={handleQuickStart}
+                className="px-4 py-2 text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-xl hover:bg-amber-100 transition flex items-center gap-2"
+                title="Load a ready-to-run coffee process example"
+              >
+                <Coffee size={14} />
+                Coffee Demo
+              </button>
+            )}
             <button
               onClick={handleComplete}
               className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-700 transition"

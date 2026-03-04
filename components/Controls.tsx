@@ -100,6 +100,16 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
     : `n=${vsmMetrics.sampleSize}. Window: ${windowLabel}`;
   const wipTooltip = `Q ${itemCounts.queued} · P ${itemCounts.processing} · T ${itemCounts.transit} · S ${itemCounts.stuck}`;
 
+  const confidence = useMemo(() => {
+    if (vsmMetrics.sampleSize >= 20) {
+      return { label: 'High', className: 'text-emerald-600 bg-emerald-50 border-emerald-200' };
+    }
+    if (vsmMetrics.sampleSize >= 5) {
+      return { label: 'Medium', className: 'text-amber-600 bg-amber-50 border-amber-200' };
+    }
+    return { label: 'Low', className: 'text-slate-500 bg-slate-100 border-slate-200' };
+  }, [vsmMetrics.sampleSize]);
+
   // Format time as human-readable mixed units (e.g. "2h 15m", "1d 3h")
   const formatLeadTime = (ticks: number): string => {
     if (ticks <= 0) return '0m';
@@ -272,6 +282,9 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
           <ChevronDown size={12} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         </div>
         <span className="text-[9px] text-slate-400 mt-0.5 text-center">Completions</span>
+        <span className={`text-[9px] mt-1 text-center border rounded px-1 py-0.5 font-semibold ${confidence.className}`} title={`Metric confidence from sample size n=${vsmMetrics.sampleSize}`}>
+          {confidence.label} confidence
+        </span>
       </div>
 
       {/* Auto Generate Toggle */}

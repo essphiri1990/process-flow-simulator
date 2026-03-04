@@ -20,6 +20,7 @@ const getCompleted = (items: ProcessItem[], metricsEpoch?: number): ProcessItem[
     (it) =>
       it.status === ItemStatus.COMPLETED &&
       it.completionTick !== null &&
+      it.terminalNodeId !== null &&
       (metricsEpoch === undefined || it.metricsEpoch === metricsEpoch)
   );
 };
@@ -30,9 +31,23 @@ const getCompletionWindow = (items: ProcessItem[], windowSize: number, metricsEp
   return completed.slice(0, windowSize);
 };
 
+const getCompletionWindowWithFallback = (
+  items: ProcessItem[],
+  windowSize: number,
+  metricsEpoch: number | undefined,
+  minSamples: number
+) => {
+  const scoped = getCompletionWindow(items, windowSize, metricsEpoch);
+  if (metricsEpoch === undefined || scoped.length >= minSamples) {
+    return { completions: scoped, usedFallback: false };
+  }
+  const fallback = getCompletionWindow(items, windowSize, undefined);
+  return { completions: fallback, usedFallback: fallback.length > 0 };
+};
+
 export const computeLeadMetrics = (items: ProcessItem[], config: MetricsWindowConfig = {}): LeadMetrics => {
   const windowSize = config.windowSize ?? DEFAULT_COMPLETION_WINDOW;
-  const completed = getCompletionWindow(items, windowSize, config.metricsEpoch);
+  const { completions: completed } = getCompletionWindowWithFallback(items, windowSize, config.metricsEpoch, 1);
   let totalLead = 0;
   let totalVAT = 0;
 
@@ -58,7 +73,7 @@ export const computeLeadMetrics = (items: ProcessItem[], config: MetricsWindowCo
 
 export const computeThroughputFromCompletions = (items: ProcessItem[], config: MetricsWindowConfig = {}) => {
   const windowSize = config.windowSize ?? DEFAULT_COMPLETION_WINDOW;
-  const completed = getCompletionWindow(items, windowSize, config.metricsEpoch);
+  const { completions: completed } = getCompletionWindowWithFallback(items, windowSize, config.metricsEpoch, 2);
   const sampleSize = completed.length;
 
   if (sampleSize < 2) {

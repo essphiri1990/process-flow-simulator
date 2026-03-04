@@ -161,6 +161,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) =>
                   defaultValue="devops"
                 >
                   <option value="devops">DevOps Pipeline</option>
+                  <option value="coffee">Coffee Service</option>
                   <option value="hospital">Hospital ER Triage</option>
                   <option value="manufacturing">Manufacturing Line</option>
                   <option value="empty">Empty Canvas</option>

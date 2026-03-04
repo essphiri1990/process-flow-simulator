@@ -11,7 +11,6 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const deleteNode = useStore((state) => state.deleteNode);
   const timeUnit = useStore((state) => state.timeUnit);
-  const tickCount = useStore((state) => state.tickCount);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
   // Separate queued and processing in single pass
@@ -20,8 +19,8 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   let leadTimeSum = 0;
   for (const item of items) {
     if (item.status === ItemStatus.QUEUED || item.status === ItemStatus.PROCESSING) {
-      // Per-node lead time: time since the item entered this node
-      leadTimeSum += Math.max(0, tickCount - item.nodeEnterTick);
+      // Per-node lead time uses the same time buckets as global lead metrics.
+      leadTimeSum += Math.max(0, item.nodeLeadTime);
     }
     if (item.status === ItemStatus.QUEUED) queuedItems.push(item);
     else if (item.status === ItemStatus.PROCESSING) processingItems.push(item);

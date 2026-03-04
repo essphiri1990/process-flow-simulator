@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { useStore } from '../store';
 import { X, User, Box, FileText, Circle, Square, Clock, Palette, ChevronDown, Activity } from 'lucide-react';
-import { TIME_UNIT_PRESETS, NODE_HEADER_COLORS, DEMAND_UNIT_LABELS, DemandUnit } from '../types';
+import { NODE_HEADER_COLORS, DEMAND_UNIT_LABELS, DemandUnit } from '../types';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -12,8 +12,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const setItemConfig = useStore((state) => state.setItemConfig);
   const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const setDefaultHeaderColor = useStore((state) => state.setDefaultHeaderColor);
-  const timeUnit = useStore((state) => state.timeUnit);
-  const setTimeUnit = useStore((state) => state.setTimeUnit);
   const demandMode = useStore((state) => state.demandMode);
   const demandUnit = useStore((state) => state.demandUnit);
   const setDemandMode = useStore((state) => state.setDemandMode);
@@ -183,25 +181,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               Time Settings
             </h3>
 
-            <div>
-              <label className="text-xs text-slate-400 font-bold mb-2 block">Each simulation step represents:</label>
-              <div className="grid grid-cols-3 gap-2">
-                {Object.entries(TIME_UNIT_PRESETS).map(([key, preset]) => (
-                  <button
-                    key={key}
-                    onClick={() => setTimeUnit(key)}
-                    className={`p-2 rounded-lg border text-sm font-medium transition ${
-                      timeUnit === key
-                        ? 'bg-blue-50 border-blue-500 text-blue-700'
-                        : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
-                    }`}
-                  >
-                    1 {preset.unitName}
-                  </button>
-                ))}
-              </div>
-              <p className="text-xs text-slate-400 mt-2">
-                This affects how VSM metrics are displayed (e.g., Lead Time in {TIME_UNIT_PRESETS[timeUnit]?.unitNamePlural || 'ticks'})
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+              <label className="text-xs text-slate-400 font-bold mb-1 block">Simulation time base</label>
+              <p className="text-sm font-semibold text-slate-700">1 tick = 1 simulated minute</p>
+              <p className="text-xs text-slate-500 mt-1">
+                Processing, lead time, throughput, and demand all use this same unit to keep calculations consistent.
               </p>
             </div>
           </div>

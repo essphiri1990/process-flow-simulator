@@ -8,7 +8,7 @@ const H = 200;
 const CANVAS_BG = '#f8fafc';
 
 const SunMoonCycle: React.FC = () => {
-  const tickCount = useStore((state) => state.tickCount);
+  const tickCount = useStore((state) => state.displayTickCount);
   const isRunning = useStore((state) => state.isRunning);
   const simulationProgress = useStore((state) => state.simulationProgress);
   const targetDuration = useStore((state) => state.targetDuration);

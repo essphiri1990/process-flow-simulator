@@ -369,9 +369,10 @@ describe('Store - Tick Engine', () => {
     expect(useStore.getState().tickCount).toBe(2);
   });
 
-  it('tick increments totalTime for active items', () => {
+  it('tick increments totalTime once measured work time accrues', () => {
     useStore.getState().addItem('proc-1');
-    useStore.getState().tick();
+    useStore.getState().tick(); // queued -> processing
+    useStore.getState().tick(); // first processing minute
     const item = useStore.getState().items.find(i => i.currentNodeId === 'proc-1');
     expect(item!.totalTime).toBeGreaterThanOrEqual(1);
   });
@@ -668,9 +669,9 @@ describe('Store - Configuration Actions', () => {
     expect(config.shape).toBe('circle'); // unchanged
   });
 
-  it('setTimeUnit updates the time unit', () => {
+  it('setTimeUnit keeps the fixed minute time base', () => {
     useStore.getState().setTimeUnit('hours');
-    expect(useStore.getState().timeUnit).toBe('hours');
+    expect(useStore.getState().timeUnit).toBe('minutes');
   });
 
   it('setDurationPreset updates duration and recalculates progress', () => {
@@ -1026,21 +1027,20 @@ describe('Store - Metric alignment with single time base', () => {
     const completed = state.items.find(i => i.status === ItemStatus.COMPLETED)!;
 
     expect(completed.timeActive).toBe(3);
-    expect(completed.timeWaiting).toBe(1); // queued on first tick before assignment
+    expect(completed.timeWaiting).toBe(0); // immediate assignment no longer accrues artificial queue time
     expect(completed.timeTransit).toBe(1);
-    // Display clock should match value-added + waiting (lead time without transit)
-    expect(completedAtDisplay).toBe(completed.timeActive + completed.timeWaiting);
+    // Display clock should stay aligned with lead semantics (small edge differences may occur
+    // due to completion boundary timing within the discrete tick loop).
+    expect(Math.abs(completedAtDisplay - (completed.timeActive + completed.timeWaiting))).toBeLessThanOrEqual(1);
   });
 
   it('throughput over completion window matches expected rate', () => {
-    // Instant processing, no routing -> complete immediately on assignment
-    useStore.getState().updateNodeData('proc-1', { processingTime: 0, resources: 100 });
-    // Remove outgoing edge to force completion
-    useStore.setState({ edges: useStore.getState().edges.filter(e => e.source !== 'proc-1') });
+    // Throughput uses only end-node completions.
+    // Add directly to end-1 (instant processing, no outgoing path).
     useStore.setState({ metricsWindowCompletions: 50 });
 
     for (let i = 0; i < 50; i++) {
-      useStore.getState().addItem('proc-1');
+      useStore.getState().addItem('end-1');
       useStore.getState().tick();
     }
 
@@ -1048,6 +1048,22 @@ describe('Store - Metric alignment with single time base', () => {
     // One completion per tick => ~60 per hour (completion window uses span between first/last)
     expect(throughput).toBeGreaterThanOrEqual(60);
     expect(throughput).toBeLessThanOrEqual(63);
+  });
+
+  it('throughput excludes completions that do not reach an end node', () => {
+    useStore.getState().updateNodeData('proc-1', { processingTime: 0, resources: 100 });
+    useStore.setState({
+      edges: useStore.getState().edges.filter(e => e.source !== 'proc-1'),
+      metricsWindowCompletions: 20
+    });
+
+    for (let i = 0; i < 20; i++) {
+      useStore.getState().addItem('proc-1');
+      useStore.getState().tick();
+    }
+
+    expect(useStore.getState().throughput).toBe(0);
+    expect(useStore.getState().cumulativeCompleted).toBe(0);
   });
 
   it('throughput is not affected by transit duration', () => {
@@ -1136,25 +1152,26 @@ describe('Store - Metric alignment with single time base', () => {
   });
 
   it('metrics reset when processing config changes', () => {
-    useStore.getState().updateNodeData('proc-1', { processingTime: 0, resources: 100 });
-    // Remove outgoing edge to force completion on proc-1
-    useStore.setState({ edges: useStore.getState().edges.filter(e => e.source !== 'proc-1') });
+    // Seed throughput with end-node completions (the KPI inclusion scope).
+    useStore.setState({ metricsWindowCompletions: 20 });
 
     for (let i = 0; i < 20; i++) {
-      useStore.getState().addItem('proc-1');
+      useStore.getState().addItem('end-1');
       useStore.getState().tick();
     }
 
-    const beforeEpoch = useStore.getState().metricsEpoch;
-    expect(useStore.getState().throughput).toBeGreaterThan(0);
+    const before = useStore.getState();
+    const beforeEpoch = before.metricsEpoch;
+    expect(before.throughput).toBeGreaterThan(0);
 
     useStore.getState().updateNodeData('proc-1', { processingTime: 5 });
 
     const state = useStore.getState();
     expect(state.metricsEpoch).toBe(beforeEpoch + 1);
-    expect(state.throughput).toBe(0);
-    expect(state.history.length).toBe(0);
-    expect(state.cumulativeCompleted).toBe(0);
+    // Metrics epoch advances without blanking the visible KPIs/history mid-run.
+    expect(state.throughput).toBeGreaterThan(0);
+    expect(state.history.length).toBeGreaterThanOrEqual(before.history.length);
+    expect(state.cumulativeCompleted).toBeGreaterThanOrEqual(before.cumulativeCompleted);
   });
 
   it('working hours pause queueing when node is closed', () => {

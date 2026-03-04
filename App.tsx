@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState, useRef } from 'react';
+import React, { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react';
 import ReactFlow, {
   Background,
   Controls as FlowControls,
@@ -19,15 +19,13 @@ import AnnotationNode from './components/AnnotationNode';
 import Sidebar from './components/Sidebar';
 import Controls from './components/Controls';
 import ConfigPanel from './components/ConfigPanel';
-import SettingsModal from './components/SettingsModal';
-import AnalyticsDashboard from './components/AnalyticsDashboard';
 import ToastContainer from './components/Toast';
 import SunMoonCycle from './components/SunMoonCycle';
 import Onboarding, { shouldShowOnboarding } from './components/Onboarding';
 import ErrorBoundary from './components/ErrorBoundary';
 import DebugOverlay from './components/DebugOverlay';
 
-import { MousePointer2, Info, Menu } from 'lucide-react';
+import { MousePointer2, Info, Menu, BookOpen, PlayCircle, X } from 'lucide-react';
 
 const nodeTypes = {
   processNode: ProcessNode,
@@ -39,6 +37,18 @@ const nodeTypes = {
 const edgeTypes = {
   processEdge: ProcessEdge,
 };
+
+const MODEL_PRIMER_KEY = 'processFlowSim_hideModelPrimer';
+const SettingsModal = lazy(() => import('./components/SettingsModal'));
+const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'));
+
+const ModalLoading = ({ label }: { label: string }) => (
+  <div className="fixed inset-0 bg-black/25 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-xl px-5 py-3 text-sm font-medium text-slate-600">
+      {label}
+    </div>
+  </div>
+);
 
 function Flow() {
   const {
@@ -61,6 +71,7 @@ function Flow() {
   const [showHelp, setShowHelp] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding);
+  const [showModelPrimer, setShowModelPrimer] = useState(() => !localStorage.getItem(MODEL_PRIMER_KEY));
 
   const handleNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     // Open config for process, start, and end nodes
@@ -124,6 +135,20 @@ function Flow() {
     }));
   }, [nodes, selectedNodeId]);
 
+  const runCoffeeQuickStart = useCallback(() => {
+    const store = useStore.getState();
+    store.loadScenario('coffee');
+    store.setDurationPreset('1hour');
+    store.setSpeedPreset('1x');
+    store.setCountTransitInClock(false);
+    store.startSimulation();
+  }, []);
+
+  const dismissPrimer = useCallback(() => {
+    setShowModelPrimer(false);
+    localStorage.setItem(MODEL_PRIMER_KEY, 'true');
+  }, []);
+
   return (
     <div className="w-full h-screen bg-slate-50 relative font-sans text-slate-900 overflow-hidden">
 
@@ -146,6 +171,48 @@ function Flow() {
       )}
 
       <DebugOverlay />
+
+      {showModelPrimer && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 max-w-[680px] w-[calc(100%-180px)]">
+          <div className="bg-white/95 backdrop-blur-md rounded-xl border border-slate-200 shadow-lg px-4 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <div className="mt-0.5 w-7 h-7 rounded-lg bg-blue-50 border border-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                  <BookOpen size={14} />
+                </div>
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">How to Read This Simulation</div>
+                  <div className="text-sm text-slate-700 mt-0.5 leading-snug">
+                    Clock = elapsed timeline. Lead = queue + processing per completed item. Throughput = end completions/hour from recent window.
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={runCoffeeQuickStart}
+                      className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1.5"
+                    >
+                      <PlayCircle size={12} />
+                      Run Coffee Demo
+                    </button>
+                    <button
+                      onClick={() => setShowOnboarding(true)}
+                      className="text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg transition"
+                    >
+                      Open Walkthrough
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={dismissPrimer}
+                className="p-1.5 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition shrink-0"
+                title="Hide primer"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Help Button (Top Right) */}
       <button
@@ -242,11 +309,15 @@ function Flow() {
       )}
 
       {isSettingsOpen && (
-        <SettingsModal onClose={() => setIsSettingsOpen(false)} />
+        <Suspense fallback={<ModalLoading label="Loading Settings..." />}>
+          <SettingsModal onClose={() => setIsSettingsOpen(false)} />
+        </Suspense>
       )}
 
       {isAnalyticsOpen && (
-        <AnalyticsDashboard onClose={() => setIsAnalyticsOpen(false)} />
+        <Suspense fallback={<ModalLoading label="Loading Analytics..." />}>
+          <AnalyticsDashboard onClose={() => setIsAnalyticsOpen(false)} />
+        </Suspense>
       )}
 
       {/* Toast notifications */}
@@ -254,7 +325,10 @@ function Flow() {
 
       {/* First-run onboarding */}
       {showOnboarding && (
-        <Onboarding onDismiss={() => setShowOnboarding(false)} />
+        <Onboarding
+          onDismiss={() => setShowOnboarding(false)}
+          onQuickStart={runCoffeeQuickStart}
+        />
       )}
     </div>
   );

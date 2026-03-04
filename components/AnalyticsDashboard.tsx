@@ -1,6 +1,20 @@
 import React, { memo, useMemo } from 'react';
 import { useStore } from '../store';
 import { X, TrendingUp, Activity, BarChart3, Clock, CheckCircle2, Gauge, AlertTriangle } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+} from 'recharts';
 
 import { DURATION_PRESETS, TICKS_PER_HOUR, TICKS_PER_WORKDAY, TICKS_PER_WEEK, ItemStatus } from '../types';
 import { computeLeadMetrics, formatCompletionWindowLabel } from '../metrics';
@@ -29,6 +43,20 @@ const getDisplayConfig = (durationPreset: string, tickCount: number): { divisor:
     case 'months': return { divisor: TICKS_PER_WORKDAY * 22, abbrev: 'mo', unitName: 'months' };
     default: return { divisor: 1, abbrev: 'min', unitName: 'minutes' };
   }
+};
+
+const formatLeadTimeAbsolute = (ticks: number): string => {
+  if (ticks <= 0) return '0m';
+  const totalMinutes = Math.round(ticks);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const remainingMinutes = totalMinutes % 60;
+  if (hours < 8) {
+    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(totalMinutes / TICKS_PER_WORKDAY);
+  const remainingHours = Math.floor((totalMinutes % TICKS_PER_WORKDAY) / 60);
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 };
 
 const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
@@ -123,6 +151,102 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
     }).sort((a, b) => b.processed - a.processed);
   }, [nodes, items]);
 
+  const trendData = useMemo(
+    () =>
+      history.map((h) => ({
+        elapsed: Number((h.tick / displayConfig.divisor).toFixed(1)),
+        throughput: Number(h.throughput.toFixed(2)),
+        wip: h.wip,
+        completed: h.totalCompleted,
+      })),
+    [history, displayConfig.divisor]
+  );
+
+  const leadCompositionData = useMemo(
+    () => [
+      { name: 'Value-Added', ticks: Number(leadMetrics.avgVAT.toFixed(2)) },
+      { name: 'Waiting', ticks: Number(Math.max(0, leadMetrics.avgLeadTime - leadMetrics.avgVAT).toFixed(2)) },
+    ],
+    [leadMetrics.avgLeadTime, leadMetrics.avgVAT]
+  );
+
+  const demandBalanceData = useMemo(
+    () => [
+      { metric: 'Target', value: demandTotals.total },
+      { metric: 'Arrivals', value: demandArrivalsGenerated },
+      { metric: 'Completed', value: periodCompleted },
+      { metric: 'Backlog', value: itemCounts.wip },
+    ],
+    [demandArrivalsGenerated, demandTotals.total, itemCounts.wip, periodCompleted]
+  );
+
+  const nodeOutputData = useMemo(
+    () =>
+      nodeStats.slice(0, 8).map((node) => ({
+        node: node.label.length > 14 ? `${node.label.slice(0, 14)}…` : node.label,
+        processed: node.processed,
+        failed: node.failed,
+      })),
+    [nodeStats]
+  );
+
+  const primaryConstraint = useMemo(() => {
+    const candidates = nodeStats
+      .filter((n) => n.type === 'processNode')
+      .sort((a, b) => {
+        if (b.queueLength !== a.queueLength) return b.queueLength - a.queueLength;
+        return b.utilization - a.utilization;
+      });
+    return candidates[0] || null;
+  }, [nodeStats]);
+
+  const executiveSummary = useMemo(() => {
+    const demandGap = demandMode === 'target' ? Math.max(0, demandArrivalsGenerated - periodCompleted) : 0;
+    if (!primaryConstraint) {
+      return {
+        title: 'System Stable',
+        message: 'No clear constraint detected yet. Keep running to build a larger sample for diagnostics.'
+      };
+    }
+    if (primaryConstraint.queueLength >= 8 || primaryConstraint.utilization >= 90) {
+      return {
+        title: `Constraint at ${primaryConstraint.label}`,
+        message: `High queue (${primaryConstraint.queueLength}) and utilization (${primaryConstraint.utilization.toFixed(0)}%) suggest this node is limiting flow.`
+      };
+    }
+    if (demandGap > 0) {
+      return {
+        title: 'Demand Risk',
+        message: `${demandGap} items are not yet completed for the current demand window. Focus on reducing waiting at key handoffs.`
+      };
+    }
+    return {
+      title: 'Flow Improving',
+      message: 'Throughput and queue profile look balanced. Continue monitoring lead-time composition for new waiting spikes.'
+    };
+  }, [demandArrivalsGenerated, demandMode, periodCompleted, primaryConstraint]);
+
+  const sampleConfidence = useMemo(() => {
+    if (leadMetrics.sampleSize >= 20) {
+      return { label: 'High', className: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
+    }
+    if (leadMetrics.sampleSize >= 5) {
+      return { label: 'Medium', className: 'bg-amber-100 text-amber-800 border-amber-200' };
+    }
+    return { label: 'Low', className: 'bg-slate-100 text-slate-700 border-slate-200' };
+  }, [leadMetrics.sampleSize]);
+
+  const waitingShare = useMemo(() => {
+    if (leadMetrics.avgLeadTime <= 0) return 0;
+    const waiting = Math.max(0, leadMetrics.avgLeadTime - leadMetrics.avgVAT);
+    return (waiting / leadMetrics.avgLeadTime) * 100;
+  }, [leadMetrics.avgLeadTime, leadMetrics.avgVAT]);
+
+  const deliveryRate = useMemo(() => {
+    if (demandMode !== 'target' || demandTotals.total <= 0) return null;
+    return (periodCompleted / demandTotals.total) * 100;
+  }, [demandMode, demandTotals.total, periodCompleted]);
+
   // Format time based on adaptive display config
   const formatTime = (ticks: number) => {
     if (displayConfig.divisor === 1) return ticks.toFixed(0);
@@ -189,6 +313,38 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50">
+          <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-5 rounded-2xl border border-slate-700 shadow-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.2em] text-slate-300 font-semibold">Operational Snapshot</div>
+                <div className="text-lg font-semibold mt-1">{executiveSummary.title}</div>
+                <p className="text-sm text-slate-300 mt-1 leading-relaxed max-w-3xl">
+                  {executiveSummary.message}
+                </p>
+              </div>
+              <span className={`text-[11px] px-2 py-1 rounded-full border font-semibold shrink-0 ${sampleConfidence.className}`}>
+                {sampleConfidence.label} confidence
+              </span>
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Throughput</div>
+                <div className="text-xl font-bold mt-1">{throughput.toFixed(1)}<span className="text-sm text-slate-300">/hr</span></div>
+              </div>
+              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Lead Time</div>
+                <div className="text-xl font-bold mt-1">{formatLeadTimeAbsolute(leadMetrics.avgLeadTime)}</div>
+              </div>
+              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Waiting Share</div>
+                <div className="text-xl font-bold mt-1">{waitingShare.toFixed(0)}%</div>
+              </div>
+              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Current WIP</div>
+                <div className="text-xl font-bold mt-1">{stats.currentWip}</div>
+              </div>
+            </div>
+          </div>
 
           {demandMode === 'target' && (
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -219,6 +375,11 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                   <div className="text-xl font-bold text-amber-600">{itemCounts.wip}</div>
                 </div>
               </div>
+              {deliveryRate !== null && (
+                <div className="mt-3 text-xs text-slate-500">
+                  Delivery attainment: <span className={`font-bold ${deliveryRate >= 100 ? 'text-emerald-600' : 'text-amber-600'}`}>{deliveryRate.toFixed(1)}%</span>
+                </div>
+              )}
               {demandTotals.perNode.length > 0 && (
                 <div className="mt-3 text-xs text-slate-500">
                   <div className="font-semibold text-slate-600 mb-1">Per-start-node targets</div>
@@ -235,6 +396,15 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
           )}
 
           {/* Summary Statistics */}
+          <div className="flex items-end justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">Core KPIs</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Windowed metrics from end-of-line completions ({windowLabel}).</p>
+            </div>
+            <div className="text-xs text-slate-500">
+              Sample size: <span className="font-semibold text-slate-700">{leadMetrics.sampleSize}</span>
+            </div>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <div className="flex items-center gap-2 text-slate-500 mb-1">
@@ -286,7 +456,7 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                 <span className="text-xs font-bold uppercase">Lead Time</span>
               </div>
               <div className={`text-2xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-amber-600'}`}>
-                {formatTime(leadMetrics.avgLeadTime)}
+                {formatLeadTimeAbsolute(leadMetrics.avgLeadTime)}
               </div>
               <div className="text-xs text-slate-400">Queue + processing (transit excluded)</div>
               <div className="text-xs text-slate-400">n={leadMetrics.sampleSize} • {windowLabel}</div>
@@ -304,6 +474,138 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
               <div className="text-xs text-slate-400">n={leadMetrics.sampleSize} • {windowLabel}</div>
             </div>
           </div>
+
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+            <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+              <TrendingUp size={16} className="text-blue-600" />
+              Consultant Readout
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              This snapshot shows how well current capacity is converting incoming demand into completed output.
+              Throughput and lead time are calculated from recent end-of-line completions, so the KPIs reflect
+              actual delivered outcomes rather than in-flight visual movement.
+            </p>
+            <p className="text-sm text-slate-600 leading-relaxed mt-2">
+              For operations reviews, focus on three signals together: sustained throughput trend, WIP buildup,
+              and lead-time composition (value-added vs waiting). Rising WIP with flat throughput is a bottleneck
+              warning; rising waiting share indicates queue pressure that should be addressed with capacity,
+              balancing, or arrival smoothing.
+            </p>
+            <div className="mt-3 pt-3 border-t border-slate-100">
+              <div className="text-xs uppercase tracking-widest text-slate-400 font-bold">Interpretation Checklist</div>
+              <div className="flex flex-wrap gap-2 mt-2">
+                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
+                  Throughput trend stable
+                </span>
+                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
+                  WIP not rising faster than output
+                </span>
+                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
+                  Waiting share controlled
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">Trend Analysis</h3>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">Throughput & WIP Trend</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={trendData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="elapsed" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Line yAxisId="left" type="monotone" dataKey="throughput" name="Throughput (items/hr)" stroke="#7c3aed" strokeWidth={2} dot={false} />
+                    <Line yAxisId="right" type="monotone" dataKey="wip" name="WIP" stroke="#0284c7" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">Completion Accumulation</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={trendData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="elapsed" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Area type="monotone" dataKey="completed" name="Completed Items" stroke="#16a34a" fill="#86efac" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">Composition & Demand</h3>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">Lead-Time Composition</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={leadCompositionData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="ticks" name="Minutes" fill="#f59e0b" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {demandMode === 'target' && (
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <h3 className="text-sm font-bold text-slate-700 mb-3">Demand vs Delivery Balance</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={demandBalanceData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="metric" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="value" name="Items" fill="#2563eb" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">Node Diagnostics</h3>
+          </div>
+          {nodeOutputData.length > 0 && (
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">Node Output Comparison</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={nodeOutputData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="node" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="processed" name="Processed" fill="#16a34a" />
+                    <Bar dataKey="failed" name="Failed" fill="#dc2626" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
           {/* Per-Node Statistics Table */}
           {nodeStats.length > 0 && (

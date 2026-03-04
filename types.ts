@@ -30,6 +30,7 @@ export interface ProcessItem {
   timeActive: number; // Value Added Time (Processing)
   timeWaiting: number; // Non-Value Added Time (Queue)
   timeTransit: number; // Non-Value Added Time (Transit)
+  nodeLeadTime: number; // Time spent in current node (queue + processing while open)
   
   // Transit specific
   transitProgress: number; // 0 to 1 (linear interpolation factor)
