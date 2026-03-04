@@ -124,6 +124,96 @@ const getDemandDurationPreset = (unit: DemandUnit): string => {
   }
 };
 
+const normalizeCanvasName = (value: unknown): string => {
+  if (typeof value !== 'string') return 'Untitled Canvas';
+  const trimmed = value.trim().slice(0, 80);
+  return trimmed || 'Untitled Canvas';
+};
+
+const resolveCloudSaveCanvasName = (entry: any): string => {
+  const stateName = entry?.state_json?.canvasName;
+  if (typeof stateName === 'string' && stateName.trim()) {
+    return normalizeCanvasName(stateName);
+  }
+  if (typeof entry?.note === 'string' && entry.note.trim()) {
+    return normalizeCanvasName(entry.note);
+  }
+  return 'Untitled Canvas';
+};
+
+const parseCloudSaveUpdatedAt = (entry: any): number => {
+  const raw = typeof entry?.updated_at === 'string' ? entry.updated_at : entry?.created_at;
+  const parsed = Date.parse(raw || '');
+  return Number.isFinite(parsed) ? parsed : Date.now();
+};
+
+const applyCloudFlowSnapshot = (
+  setState: (partial: Partial<SimulationState>) => void,
+  getState: () => SimulationState,
+  snapshot: any,
+  options: {
+    canvasId?: string | null;
+    canvasName?: string | null;
+    successToast?: string | null;
+  } = {},
+): boolean => {
+  if (!snapshot || !Array.isArray(snapshot.nodes) || !Array.isArray(snapshot.edges)) {
+    return false;
+  }
+
+  const durationConfig = DURATION_PRESETS[snapshot.durationPreset] || DURATION_PRESETS.unlimited;
+  const speedConfig = SPEED_PRESETS.find((s) => s.key === snapshot.speedPreset) || SPEED_PRESETS[1];
+  const demandMode = (snapshot.demandMode as DemandMode) || 'auto';
+  const demandUnit = (snapshot.demandUnit as DemandUnit) || 'week';
+  const nextCanvasName = normalizeCanvasName(options.canvasName || snapshot.canvasName || getState().currentCanvasName);
+
+  setState({
+    nodes: snapshot.nodes,
+    edges: snapshot.edges,
+    itemConfig: snapshot.itemConfig || getState().itemConfig,
+    defaultHeaderColor: snapshot.defaultHeaderColor || getState().defaultHeaderColor,
+    durationPreset: snapshot.durationPreset || 'unlimited',
+    targetDuration: durationConfig.totalTicks,
+    speedPreset: snapshot.speedPreset || '1x',
+    ticksPerSecond: speedConfig.ticksPerSecond,
+    autoStopEnabled: snapshot.autoStopEnabled !== undefined ? snapshot.autoStopEnabled : true,
+    countTransitInClock:
+      snapshot.countTransitInClock !== undefined ? snapshot.countTransitInClock : DEFAULT_CLOCK_POLICY.countTransitInClock,
+    metricsWindowCompletions: Number.isFinite(snapshot.metricsWindowCompletions)
+      ? snapshot.metricsWindowCompletions
+      : getState().metricsWindowCompletions,
+    demandMode,
+    demandUnit,
+    demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
+    items: [],
+    isRunning: false,
+    tickCount: 0,
+    displayTickCount: 0,
+    cumulativeTransitTicks: 0,
+    cumulativeCompleted: 0,
+    throughput: 0,
+    simulationProgress: 0,
+    history: [],
+    metricsEpoch: 0,
+    metricsEpochTick: 0,
+    demandArrivalsGenerated: 0,
+    demandArrivalsByNode: {},
+    demandAccumulatorByNode: {},
+    demandOpenTicksByNode: {},
+    periodCompleted: 0,
+    itemsByNode: new Map(),
+    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+    currentCanvasId: options.canvasId === undefined ? getState().currentCanvasId : options.canvasId,
+    currentCanvasName: nextCanvasName,
+  });
+
+  if (options.successToast) {
+    showToast('success', options.successToast);
+  }
+
+  return true;
+};
+
 
 const getNextNodeId = (sourceNode: ProcessNode | StartNode, nodes: AppNode[], edges: Edge[]): string | null => {
   const outgoingEdges = edges.filter((edge) => edge.source === sourceNode.id);
@@ -736,45 +826,34 @@ export const useStore = create<SimulationState>((set, get) => ({
   clearItems: () => set({ items: [] }),
 
   // Persistence
-  saveFlow: () => {
-    const { nodes, edges, itemConfig, defaultHeaderColor, durationPreset, speedPreset, autoStopEnabled, countTransitInClock, metricsWindowCompletions, demandMode, demandUnit } = get();
-    const flow = { nodes, edges, itemConfig, defaultHeaderColor, durationPreset, speedPreset, autoStopEnabled, countTransitInClock, metricsWindowCompletions, demandMode, demandUnit };
-
+  restoreLatestCloudSave: () => {
     const sdk = getProcessBoxSdk();
-    if (!sdk?.isEmbedded) {
-      showToast('error', 'Cloud saves require Process Box embedding and sign-in.');
-      return;
-    }
+    if (!sdk?.isEmbedded) return;
 
     void sdk
-      .createCloudSave({
-        note: `Flow snapshot (${new Date().toLocaleString()})`,
-        state: flow as unknown as Record<string, unknown>,
-        tier: 'registered',
-      })
-      .then(() => {
-        showToast('success', 'Flow saved to cloud');
+      .listCloudSaves(1)
+      .then((payload) => {
+        const latestEntry = payload?.saves?.[0];
+        const latest = latestEntry?.state_json;
+        if (!latestEntry || !latest) return;
+
+        const loaded = applyCloudFlowSnapshot(set, get, latest, {
+          canvasId: typeof latestEntry.id === 'string' ? latestEntry.id : null,
+          canvasName: resolveCloudSaveCanvasName(latestEntry),
+          successToast: null,
+        });
+
+        if (loaded) {
+          void get().refreshCanvasList();
+        }
       })
       .catch(() => {
-        showToast('error', 'Cloud save failed. Please check sign-in and try again.');
+        // Silent by design: app still works when not authenticated.
       });
+  },
 
-    void sdk.logScoreRun({
-      score: nodes.length,
-      outcome: 'design_saved',
-      metadata: {
-        nodeCount: nodes.length,
-        edgeCount: edges.length,
-        durationPreset,
-        speedPreset,
-      },
-    });
-
-    void sdk.trackAppCompleted({
-      action: 'save_flow',
-      nodeCount: nodes.length,
-      edgeCount: edges.length,
-    });
+  saveFlow: () => {
+    void get().saveCanvasToDb();
   },
 
   loadFlow: () => {
@@ -787,55 +866,23 @@ export const useStore = create<SimulationState>((set, get) => ({
     void sdk
       .listCloudSaves(1)
       .then((payload) => {
-        const latest = payload?.saves?.[0]?.state_json;
-        if (!latest?.nodes || !latest?.edges) {
+        const latestEntry = payload?.saves?.[0];
+        const latest = latestEntry?.state_json;
+        if (!latestEntry || !latest) {
           showToast('warning', 'No cloud save found for this account.');
           return;
         }
 
-        const durationConfig = DURATION_PRESETS[latest.durationPreset] || DURATION_PRESETS.unlimited;
-        const speedConfig = SPEED_PRESETS.find((s) => s.key === latest.speedPreset) || SPEED_PRESETS[1];
-        const demandMode = (latest.demandMode as DemandMode) || 'auto';
-        const demandUnit = (latest.demandUnit as DemandUnit) || 'week';
-
-        set({
-          nodes: latest.nodes,
-          edges: latest.edges,
-          itemConfig: latest.itemConfig || get().itemConfig,
-          defaultHeaderColor: latest.defaultHeaderColor || get().defaultHeaderColor,
-          durationPreset: latest.durationPreset || 'unlimited',
-          targetDuration: durationConfig.totalTicks,
-          speedPreset: latest.speedPreset || '1x',
-          ticksPerSecond: speedConfig.ticksPerSecond,
-          autoStopEnabled: latest.autoStopEnabled !== undefined ? latest.autoStopEnabled : true,
-          countTransitInClock: latest.countTransitInClock !== undefined ? latest.countTransitInClock : DEFAULT_CLOCK_POLICY.countTransitInClock,
-          metricsWindowCompletions: Number.isFinite(latest.metricsWindowCompletions)
-            ? latest.metricsWindowCompletions
-            : get().metricsWindowCompletions,
-          demandMode,
-          demandUnit,
-          demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
-          items: [],
-          isRunning: false,
-          tickCount: 0,
-          displayTickCount: 0,
-          cumulativeTransitTicks: 0,
-          cumulativeCompleted: 0,
-          throughput: 0,
-          simulationProgress: 0,
-          history: [],
-          metricsEpoch: 0,
-          metricsEpochTick: 0,
-          demandArrivalsGenerated: 0,
-          demandArrivalsByNode: {},
-          demandAccumulatorByNode: {},
-          demandOpenTicksByNode: {},
-          periodCompleted: 0,
-          itemsByNode: new Map(),
-          itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+        const loaded = applyCloudFlowSnapshot(set, get, latest, {
+          canvasId: typeof latestEntry.id === 'string' ? latestEntry.id : null,
+          canvasName: resolveCloudSaveCanvasName(latestEntry),
+          successToast: 'Loaded flow from cloud save.',
         });
-
-        showToast('success', 'Loaded flow from cloud save.');
+        if (!loaded) {
+          showToast('warning', 'No valid cloud save found for this account.');
+          return;
+        }
+        void get().refreshCanvasList();
       })
       .catch(() => {
         showToast('error', 'Cloud load failed. Please check sign-in and try again.');
@@ -925,16 +972,141 @@ export const useStore = create<SimulationState>((set, get) => ({
   // --- Canvas Management ---
 
   refreshCanvasList: async () => {
-    set({ savedCanvasList: [] });
+    const sdk = getProcessBoxSdk();
+    if (!sdk?.isEmbedded) {
+      set({ savedCanvasList: [] });
+      return;
+    }
+
+    try {
+      const payload = await sdk.listCloudSaves(50);
+      const saves = Array.isArray(payload?.saves) ? payload.saves : [];
+
+      const savedCanvasList = saves
+        .filter((entry) => entry && entry.state_json && Array.isArray(entry.state_json.nodes) && Array.isArray(entry.state_json.edges))
+        .map((entry) => ({
+          id: String(entry.id),
+          name: resolveCloudSaveCanvasName(entry),
+          updatedAt: parseCloudSaveUpdatedAt(entry),
+        }));
+
+      set({ savedCanvasList });
+    } catch {
+      set({ savedCanvasList: [] });
+    }
   },
 
   saveCanvasToDb: async () => {
-    showToast('warning', 'Canvas local saves are disabled. Use cloud save.');
+    const sdk = getProcessBoxSdk();
+    if (!sdk?.isEmbedded) {
+      showToast('error', 'Cloud saves require Process Box embedding and sign-in.');
+      return;
+    }
+
+    const state = get();
+    const {
+      nodes,
+      edges,
+      itemConfig,
+      defaultHeaderColor,
+      durationPreset,
+      speedPreset,
+      autoStopEnabled,
+      countTransitInClock,
+      metricsWindowCompletions,
+      demandMode,
+      demandUnit,
+    } = state;
+
+    const flow = {
+      nodes,
+      edges,
+      itemConfig,
+      defaultHeaderColor,
+      durationPreset,
+      speedPreset,
+      autoStopEnabled,
+      countTransitInClock,
+      metricsWindowCompletions,
+      demandMode,
+      demandUnit,
+      canvasName: normalizeCanvasName(state.currentCanvasName),
+    };
+
+    try {
+      const payload = await sdk.createCloudSave({
+        note: flow.canvasName,
+        state: flow as unknown as Record<string, unknown>,
+        tier: 'registered',
+      });
+
+      const savedId = typeof payload?.saved?.id === 'string' ? payload.saved.id : null;
+      set({
+        currentCanvasId: savedId,
+        currentCanvasName: flow.canvasName,
+      });
+
+      await get().refreshCanvasList();
+      showToast('success', 'Flow saved to cloud');
+
+      void sdk.logScoreRun({
+        score: nodes.length,
+        outcome: 'design_saved',
+        metadata: {
+          nodeCount: nodes.length,
+          edgeCount: edges.length,
+          durationPreset,
+          speedPreset,
+        },
+      });
+
+      void sdk.trackAppCompleted({
+        action: 'save_flow',
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+      });
+    } catch {
+      showToast('error', 'Cloud save failed. Please check sign-in and try again.');
+    }
   },
 
   loadCanvasFromDb: async (id: string) => {
-    void id;
-    showToast('warning', 'Canvas local loads are disabled. Use cloud load.');
+    const saveId = typeof id === 'string' ? id.trim() : '';
+    if (!saveId) {
+      showToast('error', 'Invalid cloud save id.');
+      return;
+    }
+
+    const sdk = getProcessBoxSdk();
+    if (!sdk?.isEmbedded) {
+      showToast('error', 'Cloud load requires Process Box embedding and sign-in.');
+      return;
+    }
+
+    try {
+      const payload = await sdk.listCloudSaves(50);
+      const saves = Array.isArray(payload?.saves) ? payload.saves : [];
+      const target = saves.find((entry) => String(entry?.id) === saveId);
+
+      if (!target?.state_json) {
+        showToast('warning', 'Cloud save not found.');
+        return;
+      }
+
+      const loaded = applyCloudFlowSnapshot(set, get, target.state_json, {
+        canvasId: saveId,
+        canvasName: resolveCloudSaveCanvasName(target),
+        successToast: 'Loaded flow from cloud save.',
+      });
+      if (!loaded) {
+        showToast('warning', 'Cloud save is invalid for this app version.');
+        return;
+      }
+
+      await get().refreshCanvasList();
+    } catch {
+      showToast('error', 'Cloud load failed. Please check sign-in and try again.');
+    }
   },
 
   newCanvas: () => {
@@ -965,13 +1137,35 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   renameCurrentCanvas: async (name: string) => {
-    set({ currentCanvasName: name });
-    showToast('warning', 'Canvas local rename is disabled.');
+    set({ currentCanvasName: normalizeCanvasName(name) });
   },
 
   deleteCanvasFromDb: async (id: string) => {
-    void id;
-    showToast('warning', 'Canvas local delete is disabled.');
+    const saveId = typeof id === 'string' ? id.trim() : '';
+    if (!saveId) {
+      showToast('error', 'Invalid cloud save id.');
+      return;
+    }
+
+    const sdk = getProcessBoxSdk();
+    if (!sdk?.isEmbedded) {
+      showToast('error', 'Cloud delete requires Process Box embedding and sign-in.');
+      return;
+    }
+
+    try {
+      await sdk.deleteCloudSave(saveId);
+      if (get().currentCanvasId === saveId) {
+        set({
+          currentCanvasId: null,
+          currentCanvasName: 'Untitled Canvas',
+        });
+      }
+      await get().refreshCanvasList();
+      showToast('success', 'Cloud save deleted.');
+    } catch {
+      showToast('error', 'Cloud delete failed. Please check sign-in and try again.');
+    }
   },
 
   tick: () => {

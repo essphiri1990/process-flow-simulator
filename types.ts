@@ -399,6 +399,7 @@ export interface SimulationState {
   savedCanvasList: CanvasMetadata[];
 
   // Persistence & Scenarios
+  restoreLatestCloudSave: () => void;
   saveFlow: () => void;
   loadFlow: () => void;
   exportJson: () => void;

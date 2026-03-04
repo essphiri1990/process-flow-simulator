@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactFlow, {
   Background,
   Controls as FlowControls,
@@ -58,7 +58,8 @@ function Flow() {
     onEdgesChange,
     connect,
     reconnectEdge,
-    deleteNode
+    deleteNode,
+    restoreLatestCloudSave,
   } = useStore();
 
   // Edge reconnection ref to track the edge being updated
@@ -72,6 +73,13 @@ function Flow() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding);
   const [showModelPrimer, setShowModelPrimer] = useState(() => !localStorage.getItem(MODEL_PRIMER_KEY));
+  const hasRestoredCloudSaveRef = useRef(false);
+
+  useEffect(() => {
+    if (hasRestoredCloudSaveRef.current) return;
+    hasRestoredCloudSaveRef.current = true;
+    restoreLatestCloudSave();
+  }, [restoreLatestCloudSave]);
 
   const handleNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     // Open config for process, start, and end nodes
