@@ -12,6 +12,28 @@ type ScoreRunPayload = {
   metadata?: Record<string, unknown>;
 };
 
+type SessionCreatePayload = {
+  sessionName?: string;
+  facilitatorName?: string;
+  participantName?: string;
+  maxParticipants?: number;
+  lockAfterStart?: boolean;
+  config?: Record<string, unknown>;
+};
+
+type SessionJoinPayload = {
+  joinCode: string;
+  displayName?: string;
+  participantToken?: string | null;
+};
+
+type SessionScorePayload = {
+  participantId?: string | null;
+  scoreDelta?: number;
+  score?: number | null;
+  scoreDetails?: Record<string, unknown>;
+};
+
 type RequestEnvelope = {
   channel: 'process-box-sdk';
   version: '1.0';
@@ -69,6 +91,8 @@ function parseSdkError(response: ResponseEnvelope): Error {
 
 export type ProcessBoxSdkClient = {
   isEmbedded: boolean;
+  getContext(): Promise<any>;
+  getEntitlements(): Promise<any>;
   trackAppOpened(payload?: Record<string, unknown>): Promise<unknown>;
   trackAppCompleted(payload?: Record<string, unknown>): Promise<unknown>;
   listCloudSaves(limit?: number): Promise<any>;
@@ -78,6 +102,16 @@ export type ProcessBoxSdkClient = {
   logScoreRun(payload: ScoreRunPayload): Promise<any>;
   listScoreHistory(limit?: number): Promise<any>;
   getScoreHistoryBest(): Promise<any>;
+  getSession(): Promise<any>;
+  createSession(payload?: SessionCreatePayload): Promise<any>;
+  joinSession(payload: SessionJoinPayload): Promise<any>;
+  leaveSession(): Promise<any>;
+  startSession(): Promise<any>;
+  endSession(): Promise<any>;
+  setSessionLock(lockAfterStart: boolean): Promise<any>;
+  kickSessionParticipant(participantId: string, reason?: string): Promise<any>;
+  getSessionShareLink(): Promise<any>;
+  updateSessionScore(payload?: SessionScorePayload): Promise<any>;
 };
 
 let singleton: ProcessBoxSdkClient | null = null;
@@ -147,6 +181,12 @@ function createClient(appId: string): ProcessBoxSdkClient {
 
   return {
     isEmbedded: embedded,
+    getContext() {
+      return request('context.get');
+    },
+    getEntitlements() {
+      return request('entitlements.get');
+    },
     trackAppOpened(payload = {}) {
       return request('analytics.track', { eventName: 'app_opened', payload });
     },
@@ -173,6 +213,36 @@ function createClient(appId: string): ProcessBoxSdkClient {
     },
     getScoreHistoryBest() {
       return request('history.best.get');
+    },
+    getSession() {
+      return request('sessions.get');
+    },
+    createSession(payload = {}) {
+      return request('sessions.create', payload);
+    },
+    joinSession(payload) {
+      return request('sessions.join', payload || {});
+    },
+    leaveSession() {
+      return request('sessions.leave');
+    },
+    startSession() {
+      return request('sessions.start');
+    },
+    endSession() {
+      return request('sessions.end');
+    },
+    setSessionLock(lockAfterStart) {
+      return request('sessions.lock.set', { lockAfterStart: Boolean(lockAfterStart) });
+    },
+    kickSessionParticipant(participantId, reason = 'Removed by facilitator') {
+      return request('sessions.participant.kick', { participantId, reason });
+    },
+    getSessionShareLink() {
+      return request('sessions.shareLink.get');
+    },
+    updateSessionScore(payload = {}) {
+      return request('sessions.score', payload);
     },
   };
 }
