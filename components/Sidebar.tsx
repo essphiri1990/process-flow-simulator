@@ -81,7 +81,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) =>
 
       {/* Sidebar Panel */}
       <aside
-        className={`fixed top-3 left-3 bottom-[80px] w-64 bg-white/95 backdrop-blur-lg border border-slate-200/60 shadow-2xl z-30 flex flex-col rounded-2xl transform transition-transform duration-300 ease-in-out ${
+        className={`fixed top-3 left-3 bottom-[80px] w-64 bg-white border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] z-30 flex flex-col rounded-2xl transform transition-transform duration-300 ease-in-out ${
           isOpen ? 'translate-x-0' : '-translate-x-[calc(100%+12px)]'
         }`}
       >

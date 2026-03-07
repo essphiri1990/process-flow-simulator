@@ -81,7 +81,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   };
 
   return (
-    <div className="absolute right-3 top-3 bottom-[80px] w-80 bg-white shadow-2xl rounded-xl border border-slate-200 z-40 flex flex-col transform transition-transform duration-300 ease-in-out overflow-hidden">
+    <div className="absolute right-3 top-3 bottom-[80px] w-80 bg-white rounded-xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] z-40 flex flex-col transform transition-transform duration-300 ease-in-out overflow-hidden">
       {/* Header */}
       <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
         <div>

@@ -22,9 +22,9 @@ const ProcessThumbnail: React.FC<ProcessThumbnailProps> = ({
 
   if (renderableNodes.length === 0) {
     return (
-      <div className={`relative h-32 overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br ${accentClassName}`}>
+      <div className={`relative h-32 overflow-hidden rounded-xl border-2 border-slate-900 bg-gradient-to-br ${accentClassName}`}>
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(255,255,255,0.65),_transparent_45%)]" />
-        <div className="absolute inset-4 rounded-xl border border-dashed border-slate-300/80 bg-white/50" />
+        <div className="absolute inset-4 rounded-lg border-2 border-dashed border-slate-400 bg-white/50" />
         <div className="absolute inset-0 flex items-center justify-center text-xs font-medium text-slate-500">
           Blank canvas
         </div>
@@ -55,7 +55,7 @@ const ProcessThumbnail: React.FC<ProcessThumbnailProps> = ({
   );
 
   return (
-    <div className={`relative h-32 overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br ${accentClassName}`}>
+    <div className={`relative h-32 overflow-hidden rounded-xl border-2 border-slate-900 bg-gradient-to-br ${accentClassName}`}>
       <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.82),rgba(255,255,255,0.45))]" />
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
