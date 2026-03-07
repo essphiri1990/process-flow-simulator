@@ -113,6 +113,10 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   // Show handles when selected OR hovered
   const handleVisibility = selected ? { opacity: 1 } : { opacity: 0 };
+  const handleClassName = readOnlyMode ? '' : 'group-hover:!opacity-100 hover:!scale-125';
+  const handleStyle = readOnlyMode
+    ? { ...handleBaseStyle, opacity: 0, pointerEvents: 'none' as const }
+    : { ...handleBaseStyle, ...handleVisibility };
 
   const handleDelete = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -145,20 +149,20 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       {/* Handles are visible on hover AND when selected for better discoverability */}
 
       {/* Left */}
-      {!readOnlyMode ? <Handle type="target" position={Position.Left} id="left-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="source" position={Position.Left} id="left-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      <Handle type="target" position={Position.Left} id="left-target" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Left} id="left-source" className={handleClassName} style={handleStyle} />
 
       {/* Top */}
-      {!readOnlyMode ? <Handle type="target" position={Position.Top} id="top-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="source" position={Position.Top} id="top-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      <Handle type="target" position={Position.Top} id="top-target" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Top} id="top-source" className={handleClassName} style={handleStyle} />
 
       {/* Right */}
-      {!readOnlyMode ? <Handle type="target" position={Position.Right} id="right-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="source" position={Position.Right} id="right-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      <Handle type="target" position={Position.Right} id="right-target" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Right} id="right-source" className={handleClassName} style={handleStyle} />
 
       {/* Bottom */}
-      {!readOnlyMode ? <Handle type="target" position={Position.Bottom} id="bottom-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="source" position={Position.Bottom} id="bottom-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      <Handle type="target" position={Position.Bottom} id="bottom-target" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Bottom} id="bottom-source" className={handleClassName} style={handleStyle} />
 
 
       {/* Content Wrapper */}

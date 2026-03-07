@@ -37,6 +37,10 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   // Show handles when selected OR hovered
   const handleVisibility = selected ? { opacity: 1 } : { opacity: 0 };
+  const handleClassName = readOnlyMode ? '' : 'group-hover:!opacity-100 hover:!scale-125';
+  const handleStyle = readOnlyMode
+    ? { ...handleBaseStyle, opacity: 0, pointerEvents: 'none' as const }
+    : { ...handleBaseStyle, ...handleVisibility };
 
   const handleDelete = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -70,10 +74,10 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       ) : null}
 
       {/* Omni-Handles: Targets only - visible on hover AND when selected */}
-      {!readOnlyMode ? <Handle type="target" position={Position.Left} id="left" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="target" position={Position.Top} id="top" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="target" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="target" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      <Handle type="target" position={Position.Left} id="left" className={handleClassName} style={handleStyle} />
+      <Handle type="target" position={Position.Top} id="top" className={handleClassName} style={handleStyle} />
+      <Handle type="target" position={Position.Right} id="right" className={handleClassName} style={handleStyle} />
+      <Handle type="target" position={Position.Bottom} id="bottom" className={handleClassName} style={handleStyle} />
 
       {/* Color accent bar */}
       <div className="w-full h-1 rounded-t-[10px]" style={{ backgroundColor: data.headerColor || defaultHeaderColor }} />

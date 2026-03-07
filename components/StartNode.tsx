@@ -54,6 +54,10 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   // Show handles when selected OR hovered
   const handleVisibility = selected ? { opacity: 1 } : { opacity: 0 };
+  const handleClassName = readOnlyMode ? '' : 'group-hover:!opacity-100 hover:!scale-125';
+  const handleStyle = readOnlyMode
+    ? { ...handleBaseStyle, opacity: 0, pointerEvents: 'none' as const }
+    : { ...handleBaseStyle, ...handleVisibility };
 
   const handleDelete = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -87,10 +91,10 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       ) : null}
 
       {/* Omni-Handles: Sources only - visible on hover AND when selected */}
-      {!readOnlyMode ? <Handle type="source" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="source" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="source" position={Position.Left} id="left" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
-      {!readOnlyMode ? <Handle type="source" position={Position.Top} id="top" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      <Handle type="source" position={Position.Right} id="right" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Bottom} id="bottom" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Left} id="left" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Top} id="top" className={handleClassName} style={handleStyle} />
 
       <div className="overflow-hidden rounded-[10px] w-full h-full">
           {/* Header */}
