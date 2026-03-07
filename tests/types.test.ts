@@ -147,7 +147,6 @@ describe('ItemStatus enum', () => {
   it('has all expected statuses', () => {
     expect(ItemStatus.QUEUED).toBe('QUEUED');
     expect(ItemStatus.PROCESSING).toBe('PROCESSING');
-    expect(ItemStatus.TRANSIT).toBe('TRANSIT');
     expect(ItemStatus.COMPLETED).toBe('COMPLETED');
     expect(ItemStatus.FAILED).toBe('FAILED');
   });

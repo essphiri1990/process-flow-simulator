@@ -70,12 +70,12 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   const simulationProgress = useStore((state) => state.simulationProgress);
   const metricsWindowCompletions = useStore((state) => state.metricsWindowCompletions);
   const metricsEpoch = useStore((state) => state.metricsEpoch);
-  const throughput = useStore((state) => state.throughput);
   const itemCounts = useStore((state) => state.itemCounts);
   const demandMode = useStore((state) => state.demandMode);
   const demandUnit = useStore((state) => state.demandUnit);
   const demandArrivalsGenerated = useStore((state) => state.demandArrivalsGenerated);
   const periodCompleted = useStore((state) => state.periodCompleted);
+  const lastRunSummary = useStore((state) => state.lastRunSummary);
 
   // Get adaptive display configuration
   const displayConfig = useMemo(() => getDisplayConfig(durationPreset, displayTickCount), [durationPreset, displayTickCount]);
@@ -165,9 +165,10 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   const leadCompositionData = useMemo(
     () => [
       { name: 'Value-Added', ticks: Number(leadMetrics.avgVAT.toFixed(2)) },
-      { name: 'Waiting', ticks: Number(Math.max(0, leadMetrics.avgLeadTime - leadMetrics.avgVAT).toFixed(2)) },
+      { name: 'Waiting', ticks: Number(Math.max(0, leadMetrics.avgLeadWorking - leadMetrics.avgVAT).toFixed(2)) },
+      { name: 'Closed', ticks: Number(leadMetrics.avgClosed.toFixed(2)) },
     ],
-    [leadMetrics.avgLeadTime, leadMetrics.avgVAT]
+    [leadMetrics.avgClosed, leadMetrics.avgLeadWorking, leadMetrics.avgVAT]
   );
 
   const demandBalanceData = useMemo(
@@ -237,10 +238,10 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   }, [leadMetrics.sampleSize]);
 
   const waitingShare = useMemo(() => {
-    if (leadMetrics.avgLeadTime <= 0) return 0;
-    const waiting = Math.max(0, leadMetrics.avgLeadTime - leadMetrics.avgVAT);
-    return (waiting / leadMetrics.avgLeadTime) * 100;
-  }, [leadMetrics.avgLeadTime, leadMetrics.avgVAT]);
+    if (leadMetrics.avgLeadWorking <= 0) return 0;
+    const waiting = Math.max(0, leadMetrics.avgLeadWorking - leadMetrics.avgVAT);
+    return (waiting / leadMetrics.avgLeadWorking) * 100;
+  }, [leadMetrics.avgLeadWorking, leadMetrics.avgVAT]);
 
   const deliveryRate = useMemo(() => {
     if (demandMode !== 'target' || demandTotals.total <= 0) return null;
@@ -283,7 +284,7 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
               Performance Analytics
             </h2>
             <p className="text-xs text-slate-500">
-              Real-time simulation metrics • {formatTime(displayTickCount)} {displayConfig.unitName} elapsed
+              Real-time simulation metrics • {formatTime(displayTickCount)} {displayConfig.unitName} observed
               {isRunning && <span className="ml-2 inline-flex items-center gap-1 text-emerald-600 font-bold animate-pulse">● Live</span>}
             </p>
           </div>
@@ -313,6 +314,67 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50">
+          {lastRunSummary && (
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 font-semibold">Latest Run Summary</div>
+                  <div className="text-lg font-semibold text-slate-800 mt-1">
+                    {lastRunSummary.outcome === 'target_run_completed' ? 'Target run completed' : 'Target run stopped early'}
+                  </div>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Run Time = observation window. Lead Time = queue + processing.
+                  </p>
+                </div>
+                <span
+                  className={`text-[11px] px-2 py-1 rounded-full border font-semibold ${
+                    lastRunSummary.outcome === 'target_run_completed'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                  }`}
+                >
+                  {lastRunSummary.outcome === 'target_run_completed' ? 'Logged to Process Box' : 'Local only'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-4">
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Arrivals</div>
+                  <div className="text-xl font-bold text-slate-700">{lastRunSummary.arrivals}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Completed</div>
+                  <div className="text-xl font-bold text-emerald-600">{lastRunSummary.completed}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Backlog</div>
+                  <div className="text-xl font-bold text-amber-600">{lastRunSummary.backlogEnd}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">WIP End</div>
+                  <div className="text-xl font-bold text-blue-600">{lastRunSummary.wipEnd}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Service Level</div>
+                  <div className="text-xl font-bold text-slate-700">{lastRunSummary.score.toFixed(1)}%</div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Lead (Working)</div>
+                  <div className="text-base font-bold text-slate-700">{formatLeadTimeAbsolute(lastRunSummary.workingLeadAvg)}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Thru (Working)</div>
+                  <div className="text-base font-bold text-slate-700">{lastRunSummary.workingThroughput.toFixed(1)}/h</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="text-[10px] text-slate-400 uppercase font-bold">Seed</div>
+                  <div className="text-base font-bold text-slate-700">{lastRunSummary.seed}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-5 rounded-2xl border border-slate-700 shadow-lg">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -326,23 +388,18 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                 {sampleConfidence.label} confidence
               </span>
             </div>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+            <div className="grid grid-cols-2 lg:grid-cols-2 gap-3 mt-4">
               <div className="bg-white/10 rounded-xl p-3 border border-white/10">
-                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Throughput</div>
-                <div className="text-xl font-bold mt-1">{throughput.toFixed(1)}<span className="text-sm text-slate-300">/hr</span></div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Thru (Working)</div>
+                <div className="text-xl font-bold mt-1">{leadMetrics.throughputWorkingPerHour.toFixed(1)}<span className="text-sm text-slate-300">/hr</span></div>
               </div>
               <div className="bg-white/10 rounded-xl p-3 border border-white/10">
-                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Lead Time</div>
-                <div className="text-xl font-bold mt-1">{formatLeadTimeAbsolute(leadMetrics.avgLeadTime)}</div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Lead (Working)</div>
+                <div className="text-xl font-bold mt-1">{formatLeadTimeAbsolute(leadMetrics.avgLeadWorking)}</div>
               </div>
-              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
-                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Waiting Share</div>
-                <div className="text-xl font-bold mt-1">{waitingShare.toFixed(0)}%</div>
-              </div>
-              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
-                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Current WIP</div>
-                <div className="text-xl font-bold mt-1">{stats.currentWip}</div>
-              </div>
+            </div>
+            <div className="mt-3 text-xs text-slate-300">
+              Run Time = observation window. Lead Time = queue + processing.
             </div>
           </div>
 
@@ -405,7 +462,7 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
               Sample size: <span className="font-semibold text-slate-700">{leadMetrics.sampleSize}</span>
             </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <div className="flex items-center gap-2 text-slate-500 mb-1">
                 <Gauge size={14} />
@@ -414,7 +471,7 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
               <div className="text-2xl font-bold text-blue-600">{stats.currentWip}</div>
               <div className="text-xs text-slate-400">Peak: {stats.peakWip}</div>
               <div className="text-xs text-slate-400 mt-1">
-                Q {itemCounts.queued} · P {itemCounts.processing} · T {itemCounts.transit} · S {itemCounts.stuck}
+                Q {itemCounts.queued} · P {itemCounts.processing} · S {itemCounts.stuck}
               </div>
             </div>
 
@@ -430,36 +487,15 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <div className="flex items-center gap-2 text-slate-500 mb-1">
                 <Activity size={14} />
-                <span className="text-xs font-bold uppercase">Throughput</span>
+                <span className="text-xs font-bold uppercase">Thru (Working)</span>
               </div>
               <div className={`text-2xl font-bold ${lowSample ? 'text-slate-400' : 'text-purple-600'}`}>
-                {throughput.toFixed(1)}
+                {leadMetrics.throughputWorkingPerHour.toFixed(1)}
               </div>
               <div className="text-xs text-slate-400">
                 items / hour • n={leadMetrics.sampleSize} • {windowLabel}
               </div>
               <div className="text-xs text-slate-400">avg: {stats.avgThroughput.toFixed(1)}</div>
-            </div>
-
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-500 mb-1">
-                <Clock size={14} />
-                <span className="text-xs font-bold uppercase">Avg WIP</span>
-              </div>
-              <div className="text-2xl font-bold text-amber-600">{stats.avgWip.toFixed(1)}</div>
-              <div className="text-xs text-slate-400">Items in system</div>
-            </div>
-
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-500 mb-1">
-                <Clock size={14} />
-                <span className="text-xs font-bold uppercase">Lead Time</span>
-              </div>
-              <div className={`text-2xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-amber-600'}`}>
-                {formatLeadTimeAbsolute(leadMetrics.avgLeadTime)}
-              </div>
-              <div className="text-xs text-slate-400">Queue + processing (transit excluded)</div>
-              <div className="text-xs text-slate-400">n={leadMetrics.sampleSize} • {windowLabel}</div>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -471,8 +507,20 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                 {leadMetrics.pce.toFixed(0)}%
               </div>
               <div className="text-xs text-slate-400">Value-added efficiency</div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <Clock size={14} />
+                <span className="text-xs font-bold uppercase">Lead (Working)</span>
+              </div>
+              <div className={`text-2xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-amber-600'}`}>
+                {formatLeadTimeAbsolute(leadMetrics.avgLeadWorking)}
+              </div>
+              <div className="text-xs text-slate-400">Queue + processing</div>
               <div className="text-xs text-slate-400">n={leadMetrics.sampleSize} • {windowLabel}</div>
             </div>
+
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -482,14 +530,17 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
             </h3>
             <p className="text-sm text-slate-600 leading-relaxed">
               This snapshot shows how well current capacity is converting incoming demand into completed output.
-              Throughput and lead time are calculated from recent end-of-line completions, so the KPIs reflect
+              Working throughput and lead time are calculated from recent end-of-line completions, so the KPIs reflect
               actual delivered outcomes rather than in-flight visual movement.
             </p>
             <p className="text-sm text-slate-600 leading-relaxed mt-2">
               For operations reviews, focus on three signals together: sustained throughput trend, WIP buildup,
-              and lead-time composition (value-added vs waiting). Rising WIP with flat throughput is a bottleneck
+              and lead-time composition (working and closed time). Rising WIP with flat throughput is a bottleneck
               warning; rising waiting share indicates queue pressure that should be addressed with capacity,
               balancing, or arrival smoothing.
+            </p>
+            <p className="text-xs text-slate-500 leading-relaxed mt-3">
+              Run Time = observation window. Lead Time = queue + processing.
             </p>
             <div className="mt-3 pt-3 border-t border-slate-100">
               <div className="text-xs uppercase tracking-widest text-slate-400 font-bold">Interpretation Checklist</div>

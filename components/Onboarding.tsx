@@ -17,12 +17,12 @@ const steps = [
   {
     icon: <Play size={24} className="text-emerald-500" />,
     title: 'Run the Simulation',
-    description: 'Press "Run" to start. Watch items move through nodes, queue up at bottlenecks, and complete the process.',
+    description: 'Press "Run" to start. Watch work queue up at bottlenecks, process through each step, and complete the flow.',
   },
   {
     icon: <BarChart2 size={24} className="text-amber-500" />,
     title: 'Analyze Performance',
-    description: 'View real-time metrics in the bottom-right panel. Open the Analytics Dashboard for detailed charts and bottleneck analysis.',
+    description: 'View working and elapsed flow metrics in the control bar. Open the Analytics Dashboard for detailed charts, run summaries, and bottleneck analysis.',
   },
 ];
 

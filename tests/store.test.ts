@@ -14,14 +14,46 @@ vi.mock('../components/Toast', () => ({
   showToast: vi.fn(),
 }));
 
+const sdkMock = {
+  isEmbedded: false,
+  getContext: vi.fn(),
+  getSession: vi.fn(),
+  listCloudSaves: vi.fn(),
+  createCloudSave: vi.fn(),
+  deleteCloudSave: vi.fn(),
+  logScoreRun: vi.fn(),
+  trackAppCompleted: vi.fn(),
+};
+
+vi.mock('../processBoxSdk', () => ({
+  getProcessBoxSdk: () => sdkMock,
+}));
+
 import { useStore } from '../store';
 import { computeLeadMetrics } from '../metrics';
+import { nextMulberry32 } from '../rng';
 
 // Helper to reset store to a clean state before each test
 const resetStore = () => {
   const store = useStore.getState();
   store.clearCanvas();
 };
+
+beforeEach(() => {
+  sdkMock.isEmbedded = false;
+  sdkMock.getContext.mockReset();
+  sdkMock.getSession.mockReset();
+  sdkMock.listCloudSaves.mockReset();
+  sdkMock.createCloudSave.mockReset();
+  sdkMock.deleteCloudSave.mockReset();
+  sdkMock.logScoreRun.mockReset();
+  sdkMock.trackAppCompleted.mockReset();
+  sdkMock.listCloudSaves.mockResolvedValue({ saves: [] });
+  sdkMock.createCloudSave.mockResolvedValue({ saved: { id: 'save-1' } });
+  sdkMock.deleteCloudSave.mockResolvedValue({});
+  sdkMock.logScoreRun.mockResolvedValue({});
+  sdkMock.trackAppCompleted.mockResolvedValue({});
+});
 
 // Helper: create a minimal linear flow: Start -> Process -> End
 const setupLinearFlow = () => {
@@ -87,7 +119,6 @@ const setupLinearFlow = () => {
     isRunning: false,
     cumulativeCompleted: 0,
     throughput: 0,
-    cumulativeTransitTicks: 0,
     displayTickCount: 0,
     history: [],
     metricsEpoch: 0,
@@ -101,10 +132,173 @@ const setupLinearFlow = () => {
     demandAccumulatorByNode: {},
     demandOpenTicksByNode: {},
     periodCompleted: 0,
+    simulationSeed: 12345,
+    runStartedAtMs: null,
+    lastRunSummary: null,
+    lastLoggedRunKey: null,
     itemsByNode: new Map(),
-    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
     autoInjectionEnabled: false,
   });
+};
+
+const setupDeterministicQualityFlow = (seed: number) => {
+  useStore.getState().clearCanvas();
+
+  useStore.setState({
+    nodes: [
+      {
+        id: 'proc-1',
+        type: 'processNode',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Decision',
+          processingTime: 1,
+          resources: 1,
+          quality: 0.5,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+      {
+        id: 'end-1',
+        type: 'endNode',
+        position: { x: 200, y: 0 },
+        data: {
+          label: 'End',
+          processingTime: 0,
+          resources: 999,
+          quality: 1.0,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+    ] as any,
+    edges: [
+      {
+        id: 'e1',
+        source: 'proc-1',
+        target: 'end-1',
+        type: 'processEdge',
+        animated: false,
+        markerEnd: { type: 'arrowclosed' },
+      },
+    ],
+    items: [],
+    tickCount: 0,
+    isRunning: false,
+    cumulativeCompleted: 0,
+    throughput: 0,
+    displayTickCount: 0,
+    history: [],
+    metricsEpoch: 0,
+    metricsEpochTick: 0,
+    metricsWindowCompletions: 50,
+    demandMode: 'auto',
+    demandUnit: 'week',
+    demandTotalTicks: 2400,
+    demandArrivalsGenerated: 0,
+    demandArrivalsByNode: {},
+    demandAccumulatorByNode: {},
+    demandOpenTicksByNode: {},
+    periodCompleted: 0,
+    simulationSeed: seed,
+    runStartedAtMs: null,
+    lastRunSummary: null,
+    lastLoggedRunKey: null,
+    itemsByNode: new Map(),
+    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
+    autoInjectionEnabled: false,
+  });
+};
+
+const setupTargetDemandFlow = (seed = 4242) => {
+  useStore.getState().clearCanvas();
+
+  useStore.setState({
+    nodes: [
+      {
+        id: 'start-1',
+        type: 'startNode',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Demand Source',
+          processingTime: 0,
+          resources: 999,
+          quality: 1.0,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+          demandTarget: 60,
+          sourceConfig: { enabled: false, interval: 20, batchSize: 1 },
+        },
+      },
+      {
+        id: 'end-1',
+        type: 'endNode',
+        position: { x: 200, y: 0 },
+        data: {
+          label: 'Done',
+          processingTime: 0,
+          resources: 999,
+          quality: 1.0,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+    ] as any,
+    edges: [
+      {
+        id: 'e1',
+        source: 'start-1',
+        target: 'end-1',
+        type: 'processEdge',
+        animated: false,
+        markerEnd: { type: 'arrowclosed' },
+      },
+    ],
+    items: [],
+    tickCount: 0,
+    isRunning: false,
+    cumulativeCompleted: 0,
+    throughput: 0,
+    displayTickCount: 0,
+    history: [],
+    metricsEpoch: 0,
+    metricsEpochTick: 0,
+    metricsWindowCompletions: 50,
+    demandMode: 'target',
+    demandUnit: 'hour',
+    demandTotalTicks: 60,
+    demandArrivalsGenerated: 0,
+    demandArrivalsByNode: {},
+    demandAccumulatorByNode: {},
+    demandOpenTicksByNode: {},
+    periodCompleted: 0,
+    durationPreset: '1hour',
+    targetDuration: 60,
+    autoStopEnabled: true,
+    simulationSeed: seed,
+    runStartedAtMs: null,
+    lastRunSummary: null,
+    lastLoggedRunKey: null,
+    itemsByNode: new Map(),
+    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
+    autoInjectionEnabled: false,
+  });
+};
+
+const findSeedForQualityOutcome = (shouldPass: boolean) => {
+  for (let seed = 1; seed < 5000; seed++) {
+    const firstRoll = nextMulberry32(seed).value;
+    if ((firstRoll <= 0.5) === shouldPass) {
+      return seed;
+    }
+  }
+  throw new Error('Unable to find a deterministic seed for the requested quality outcome.');
 };
 
 describe('Store - Initial State', () => {
@@ -271,7 +465,6 @@ describe('Store - Item Management', () => {
     const item = useStore.getState().items[0];
     expect(item.timeActive).toBe(0);
     expect(item.timeWaiting).toBe(0);
-    expect(item.timeTransit).toBe(0);
     expect(item.totalTime).toBe(0);
   });
 
@@ -394,38 +587,42 @@ describe('Store - Tick Engine', () => {
     expect(item.remainingTime).toBe(2);
   });
 
-  it('item transitions to TRANSIT after processing completes', () => {
+  it('item completes immediately when the next node is an instant end node', () => {
     useStore.getState().addItem('proc-1');
     // Tick enough times: 1 to start processing + 3 for processing
     useStore.getState().tick(); // QUEUED -> PROCESSING (rem=3)
     useStore.getState().tick(); // rem=2
     useStore.getState().tick(); // rem=1
-    useStore.getState().tick(); // rem=0 -> TRANSIT to end-1
+    useStore.getState().tick(); // rem=0 -> end-1 -> COMPLETED
 
     const item = useStore.getState().items[0];
-    expect(item.status).toBe(ItemStatus.TRANSIT);
-    expect(item.currentNodeId).toBe('end-1');
-    expect(item.fromNodeId).toBe('proc-1');
+    expect(item.status).toBe(ItemStatus.COMPLETED);
+    expect(item.currentNodeId).toBeNull();
+    expect(item.terminalNodeId).toBe('end-1');
   });
 
-  it('item in transit decrements remainingTime and increments timeTransit', () => {
+  it('item routes directly to the next node without an intermediate state', () => {
     useStore.getState().addItem('proc-1');
-    // Get to transit
     for (let i = 0; i < 4; i++) useStore.getState().tick();
 
-    const transitItem = useStore.getState().items[0];
-    expect(transitItem.status).toBe(ItemStatus.TRANSIT);
-    const transitTime = transitItem.remainingTime;
-
-    useStore.getState().tick();
-    const afterTick = useStore.getState().items[0];
-    expect(afterTick.remainingTime).toBe(transitTime - 1);
-    expect(afterTick.timeTransit).toBeGreaterThan(0);
+    const item = useStore.getState().items[0];
+    expect(item.status).toBe(ItemStatus.COMPLETED);
+    expect(item.totalTime).toBe(item.timeActive + item.timeWaiting);
   });
 
-  it('item completes after transit to end node', () => {
+  it('creates a visual transfer event when routing to the next node', () => {
     useStore.getState().addItem('proc-1');
-    // Run enough ticks to process + transit + end node processing
+    for (let i = 0; i < 4; i++) useStore.getState().tick();
+
+    const transfer = useStore.getState().visualTransfers[0];
+    expect(transfer.sourceNodeId).toBe('proc-1');
+    expect(transfer.targetNodeId).toBe('end-1');
+    expect(transfer.durationMs).toBeGreaterThan(0);
+  });
+
+  it('item completes after routing to the end node', () => {
+    useStore.getState().addItem('proc-1');
+    // Run enough ticks to process and reach the end node
     for (let i = 0; i < 100; i++) {
       useStore.getState().tick();
       const item = useStore.getState().items[0];
@@ -444,7 +641,8 @@ describe('Store - Tick Engine', () => {
     }
     const item = useStore.getState().items[0];
     expect(item.timeActive).toBeGreaterThan(0);
-    expect(item.timeTransit).toBeGreaterThanOrEqual(0);
+    expect(item.timeWaiting).toBeGreaterThanOrEqual(0);
+    expect(item.timeActive + item.timeWaiting).toBe(item.totalTime);
     expect(item.totalTime).toBeGreaterThan(0);
   });
 
@@ -539,8 +737,152 @@ describe('Store - Tick Engine', () => {
   });
 });
 
+describe('Store - Seeded Simulation And Process Box Logging', () => {
+  it('same flow + same seed + same settings produce identical stochastic outcomes across reruns', () => {
+    const passingSeed = findSeedForQualityOutcome(true);
+    setupDeterministicQualityFlow(passingSeed);
+
+    useStore.getState().addItem('proc-1');
+    for (let i = 0; i < 10; i++) useStore.getState().tick();
+    const firstRun = useStore.getState().items.map((item) => ({
+      status: item.status,
+      terminalNodeId: item.terminalNodeId,
+      completionTick: item.completionTick,
+      timeActive: item.timeActive,
+    }));
+
+    useStore.getState().resetSimulation();
+    useStore.getState().addItem('proc-1');
+    for (let i = 0; i < 10; i++) useStore.getState().tick();
+    const secondRun = useStore.getState().items.map((item) => ({
+      status: item.status,
+      terminalNodeId: item.terminalNodeId,
+      completionTick: item.completionTick,
+      timeActive: item.timeActive,
+    }));
+
+    expect(secondRun).toEqual(firstRun);
+  });
+
+  it('changing the seed changes at least one stochastic outcome', () => {
+    const passingSeed = findSeedForQualityOutcome(true);
+    const failingSeed = findSeedForQualityOutcome(false);
+
+    setupDeterministicQualityFlow(passingSeed);
+    useStore.getState().addItem('proc-1');
+    for (let i = 0; i < 10; i++) useStore.getState().tick();
+    const passingOutcome = useStore.getState().items[0]?.status;
+
+    setupDeterministicQualityFlow(failingSeed);
+    useStore.getState().addItem('proc-1');
+    for (let i = 0; i < 10; i++) useStore.getState().tick();
+    const failingOutcome = useStore.getState().items[0]?.status;
+
+    expect(passingOutcome).toBe(ItemStatus.COMPLETED);
+    expect(failingOutcome).toBe(ItemStatus.FAILED);
+  });
+
+  it('saving a canvas calls createCloudSave only', async () => {
+    setupLinearFlow();
+    sdkMock.isEmbedded = true;
+
+    await useStore.getState().saveCanvasToDb();
+
+    expect(sdkMock.createCloudSave).toHaveBeenCalledTimes(1);
+    expect(sdkMock.logScoreRun).not.toHaveBeenCalled();
+    expect(sdkMock.trackAppCompleted).not.toHaveBeenCalled();
+    expect(sdkMock.createCloudSave.mock.calls[0][0]).toMatchObject({
+      note: 'Untitled Canvas',
+      state: expect.objectContaining({
+        simulationSeed: useStore.getState().simulationSeed,
+        workspaceId: expect.any(String),
+      }),
+    });
+  });
+
+  it('refreshCanvasList groups cloud save snapshots by workspace id', async () => {
+    sdkMock.isEmbedded = true;
+    sdkMock.listCloudSaves.mockResolvedValue({
+      saves: [
+        {
+          id: 'save-older',
+          updated_at: '2026-03-06T09:00:00.000Z',
+          state_json: {
+            workspaceId: 'workspace-1',
+            canvasName: 'Coffee Service',
+            nodes: [{ id: 'a' }],
+            edges: [],
+          },
+        },
+        {
+          id: 'save-newer',
+          updated_at: '2026-03-06T10:00:00.000Z',
+          state_json: {
+            workspaceId: 'workspace-1',
+            canvasName: 'Coffee Service v2',
+            nodes: [{ id: 'a' }, { id: 'b' }],
+            edges: [{ id: 'e1' }],
+          },
+        },
+        {
+          id: 'save-2',
+          updated_at: '2026-03-05T10:00:00.000Z',
+          state_json: {
+            workspaceId: 'workspace-2',
+            canvasName: 'Hospital ER',
+            nodes: [{ id: 'c' }],
+            edges: [],
+          },
+        },
+      ],
+    });
+
+    await useStore.getState().refreshCanvasList();
+
+    const canvases = useStore.getState().savedCanvasList;
+    expect(canvases).toHaveLength(2);
+    expect(canvases[0]).toMatchObject({
+      id: 'workspace-1',
+      name: 'Coffee Service v2',
+      source: 'cloud',
+      snapshotId: 'save-newer',
+      nodeCount: 2,
+      edgeCount: 1,
+    });
+    expect(canvases[1]).toMatchObject({
+      id: 'workspace-2',
+      name: 'Hospital ER',
+      source: 'cloud',
+      snapshotId: 'save-2',
+    });
+  });
+
+  it('finite target run auto-stop logs one Process Box run with score summary metadata', () => {
+    setupTargetDemandFlow();
+    sdkMock.isEmbedded = true;
+
+    useStore.getState().startSimulation();
+    for (let i = 0; i < 120; i++) {
+      if (!useStore.getState().isRunning && useStore.getState().tickCount >= 60) break;
+      useStore.getState().tick();
+    }
+
+    const state = useStore.getState();
+    expect(state.isRunning).toBe(false);
+    expect(state.tickCount).toBe(60);
+    expect(state.lastRunSummary).not.toBeNull();
+    expect(sdkMock.logScoreRun).toHaveBeenCalledTimes(1);
+
+    const payload = sdkMock.logScoreRun.mock.calls[0][0];
+    expect(payload.outcome).toBe('target_run_completed');
+    expect(payload.score).toBe(state.lastRunSummary!.score);
+    expect(payload.durationMs).toBeGreaterThanOrEqual(0);
+    expect(payload.metadata).toMatchObject(state.lastRunSummary!);
+  });
+});
+
 describe('Store - Quality Control (Failure Path)', () => {
-  const setupLowQualityFlow = () => {
+  const setupLowQualityFlow = (seed = 1234) => {
     useStore.getState().clearCanvas();
 
     useStore.setState({
@@ -580,7 +922,6 @@ describe('Store - Quality Control (Failure Path)', () => {
       autoInjectionEnabled: false,
       cumulativeCompleted: 0,
       throughput: 0,
-      cumulativeTransitTicks: 0,
       displayTickCount: 0,
       history: [],
       metricsEpoch: 0,
@@ -594,8 +935,12 @@ describe('Store - Quality Control (Failure Path)', () => {
     demandAccumulatorByNode: {},
     demandOpenTicksByNode: {},
     periodCompleted: 0,
+    simulationSeed: seed,
+    runStartedAtMs: null,
+    lastRunSummary: null,
+    lastLoggedRunKey: null,
     itemsByNode: new Map(),
-    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
     });
   };
 
@@ -604,7 +949,7 @@ describe('Store - Quality Control (Failure Path)', () => {
     const runs = 30;
 
     for (let run = 0; run < runs; run++) {
-      setupLowQualityFlow();
+      setupLowQualityFlow(run + 1);
       useStore.getState().addItem('proc-1');
 
       for (let i = 0; i < 20; i++) {
@@ -708,12 +1053,6 @@ describe('Store - Configuration Actions', () => {
     expect(useStore.getState().autoStopEnabled).toBe(true);
   });
 
-  it('setCountTransitInClock updates clock policy', () => {
-    useStore.getState().setCountTransitInClock(true);
-    expect(useStore.getState().countTransitInClock).toBe(true);
-    useStore.getState().setCountTransitInClock(false);
-    expect(useStore.getState().countTransitInClock).toBe(false);
-  });
 });
 
 describe('Store - Scenario Loading', () => {
@@ -894,37 +1233,31 @@ describe('Store - Validation Errors', () => {
   });
 });
 
-describe('Store - Display Clock (cumulativeTransitTicks)', () => {
+describe('Store - Display Clock', () => {
   beforeEach(() => setupLinearFlow());
 
   it('displayTickCount advances every tick when no items exist', () => {
-    // With no items, no transit can happen, so displayTickCount = tickCount
     for (let i = 0; i < 10; i++) useStore.getState().tick();
     const state = useStore.getState();
     expect(state.tickCount).toBe(10);
     expect(state.displayTickCount).toBe(10);
-    expect(state.cumulativeTransitTicks).toBe(0);
   });
 
-  it('displayTickCount keeps advancing when items are processing and in transit', () => {
+  it('displayTickCount keeps advancing when items are processing and completing', () => {
     // Add items to proc-1 (processingTime=3, resources=2)
-    // This creates a flow where items process then transit to end-1
     useStore.getState().addItem('proc-1');
     useStore.getState().addItem('proc-1');
     useStore.getState().addItem('proc-1');
 
-    // Run 50 ticks - items will be processing AND in transit simultaneously
     for (let i = 0; i < 50; i++) useStore.getState().tick();
 
     const state = useStore.getState();
     expect(state.tickCount).toBe(50);
-    // The display clock must NOT get stuck - it should advance well beyond 2
-    // With items processing concurrently with transit, most ticks have non-transit activity
     expect(state.displayTickCount).toBeGreaterThan(10);
   });
 
   it('displayTickCount does not freeze during continuous flow', () => {
-    // Simulate a busy flow: keep adding items so processing + transit overlap
+    // Simulate a busy flow: keep adding items so processing overlaps
     useStore.getState().addItem('proc-1');
 
     const displayValues: number[] = [];
@@ -944,36 +1277,12 @@ describe('Store - Display Clock (cumulativeTransitTicks)', () => {
     expect(lastValue).toBeGreaterThan(15);
   });
 
-  it('cumulativeTransitTicks only increments when ALL active items are in transit', () => {
-    // Add a single item. It will process (3 ticks), then transit, then complete.
+  it('displayTickCount remains aligned with tickCount during a single-item run', () => {
     useStore.getState().addItem('proc-1');
-
-    // Track transit tick increments
-    let prevCumulativeTransit = 0;
-    const transitIncrementTicks: number[] = [];
 
     for (let i = 0; i < 40; i++) {
       useStore.getState().tick();
-      const state = useStore.getState();
-      if (state.cumulativeTransitTicks > prevCumulativeTransit) {
-        transitIncrementTicks.push(state.tickCount);
-        prevCumulativeTransit = state.cumulativeTransitTicks;
-      }
     }
-
-    // Transit-only ticks should only happen when the single item is in transit
-    // AND no other items are processing/queued. Since we have only 1 item,
-    // the transit-only ticks should match when that item is in TRANSIT status.
-    // There should be SOME transit-only ticks (when the single item is transiting alone)
-    // but NOT every tick after the first transit.
-    expect(transitIncrementTicks.length).toBeGreaterThan(0);
-    expect(transitIncrementTicks.length).toBeLessThan(30);
-  });
-
-  it('displayTickCount equals tickCount when countTransitInClock is true', () => {
-    useStore.setState({ countTransitInClock: true });
-    useStore.getState().addItem('proc-1');
-    for (let i = 0; i < 20; i++) useStore.getState().tick();
 
     const state = useStore.getState();
     expect(state.displayTickCount).toBe(state.tickCount);
@@ -990,7 +1299,7 @@ describe('Store - Display Clock (cumulativeTransitTicks)', () => {
   it('clock does not freeze with devops scenario under load', () => {
     // Load a realistic scenario and simulate
     useStore.getState().loadScenario('devops');
-    useStore.setState({ autoInjectionEnabled: true, countTransitInClock: false });
+    useStore.setState({ autoInjectionEnabled: true });
 
     for (let i = 0; i < 100; i++) useStore.getState().tick();
 
@@ -1005,9 +1314,7 @@ describe('Store - Display Clock (cumulativeTransitTicks)', () => {
 describe('Store - Metric alignment with single time base', () => {
   beforeEach(() => setupLinearFlow());
 
-  it('lead time equals active + waiting when transit is excluded from display clock', () => {
-    // Minimize transit to a single tick for determinism
-    useStore.getState().updateEdgeData('e2', { transitTime: 1 });
+  it('lead time equals active + waiting when run time is the observation clock', () => {
     // Single item with known processing time
     useStore.getState().updateNodeData('proc-1', { processingTime: 3, resources: 1 });
     useStore.getState().addItem('proc-1');
@@ -1028,7 +1335,6 @@ describe('Store - Metric alignment with single time base', () => {
 
     expect(completed.timeActive).toBe(3);
     expect(completed.timeWaiting).toBe(0); // immediate assignment no longer accrues artificial queue time
-    expect(completed.timeTransit).toBe(1);
     // Display clock should stay aligned with lead semantics (small edge differences may occur
     // due to completion boundary timing within the discrete tick loop).
     expect(Math.abs(completedAtDisplay - (completed.timeActive + completed.timeWaiting))).toBeLessThanOrEqual(1);
@@ -1045,9 +1351,8 @@ describe('Store - Metric alignment with single time base', () => {
     }
 
     const throughput = useStore.getState().throughput;
-    // One completion per tick => ~60 per hour (completion window uses span between first/last)
-    expect(throughput).toBeGreaterThanOrEqual(60);
-    expect(throughput).toBeLessThanOrEqual(63);
+    // One completion per tick => exactly 60 per hour across a 50-completion window.
+    expect(throughput).toBe(60);
   });
 
   it('throughput excludes completions that do not reach an end node', () => {
@@ -1066,44 +1371,42 @@ describe('Store - Metric alignment with single time base', () => {
     expect(useStore.getState().cumulativeCompleted).toBe(0);
   });
 
-  it('throughput is not affected by transit duration', () => {
-    const runWithTransit = (transitTime: number) => {
+  it('throughput is not affected by edge presentation metadata', () => {
+    const runWithOffset = (offset: number) => {
       setupLinearFlow();
       useStore.setState({ metricsWindowCompletions: 20 });
       useStore.getState().updateNodeData('proc-1', { processingTime: 0, resources: 100 });
-      useStore.getState().updateEdgeData('e2', { transitTime });
+      useStore.getState().updateEdgeData('e2', { offset });
 
       for (let i = 0; i < 20; i++) {
         useStore.getState().addItem('proc-1');
         useStore.getState().tick();
       }
 
-      for (let i = 0; i < transitTime + 5; i++) {
+      for (let i = 0; i < 10; i++) {
         useStore.getState().tick();
       }
 
       return useStore.getState().throughput;
     };
 
-    const throughputShort = runWithTransit(1);
-    const throughputLong = runWithTransit(20);
+    const throughputShort = runWithOffset(10);
+    const throughputLong = runWithOffset(80);
 
     expect(Math.abs(throughputShort - throughputLong)).toBeLessThanOrEqual(1);
   });
 
-  it('timeActive + timeWaiting + timeTransit equals totalTime for completed items', () => {
-    useStore.getState().updateEdgeData('e2', { transitTime: 2 });
+  it('timeActive + timeWaiting equals totalTime for completed items', () => {
     useStore.getState().updateNodeData('proc-1', { processingTime: 4, resources: 1 });
     useStore.getState().addItem('proc-1');
 
     for (let i = 0; i < 12; i++) useStore.getState().tick();
 
     const completed = useStore.getState().items.find(i => i.status === ItemStatus.COMPLETED)!;
-    expect(completed.timeActive + completed.timeWaiting + completed.timeTransit).toBe(completed.totalTime);
+    expect(completed.timeActive + completed.timeWaiting).toBe(completed.totalTime);
   });
 
   it('PCE derived from item times matches VAT/lead ratio', () => {
-    useStore.getState().updateEdgeData('e2', { transitTime: 1 });
     useStore.getState().updateNodeData('proc-1', { processingTime: 4, resources: 1 });
     useStore.getState().addItem('proc-1');
     useStore.getState().addItem('proc-1'); // ensure waiting time exists for second item
@@ -1114,10 +1417,9 @@ describe('Store - Metric alignment with single time base', () => {
     expect(items.length).toBeGreaterThanOrEqual(2);
     // Use the second item to ensure waiting time > 0
     const target = items[1];
-    const lead = Math.max(0, (target.completionTick! - target.spawnTick) - target.timeTransit);
+    const lead = target.timeActive + target.timeWaiting;
     const pce = lead > 0 ? (target.timeActive / lead) * 100 : 0;
-    // Lead should roughly equal VAT + NVAT (waiting here), off by at most 1 tick due to transition timing
-    expect(Math.abs(lead - (target.timeActive + target.timeWaiting))).toBeLessThanOrEqual(1);
+    expect(lead).toBe(target.timeActive + target.timeWaiting);
     expect(pce).toBeGreaterThanOrEqual(0);
     expect(pce).toBeLessThanOrEqual(100);
   });
@@ -1133,7 +1435,7 @@ describe('Store - Metric alignment with single time base', () => {
     }
 
     const state = useStore.getState();
-    expect(state.displayTickCount).toBe(state.tickCount - state.cumulativeTransitTicks);
+    expect(state.displayTickCount).toBe(state.tickCount);
   });
 
   it('lead time decreases after capacity/processing improvement using recent window', () => {
@@ -1141,12 +1443,12 @@ describe('Store - Metric alignment with single time base', () => {
     useStore.getState().updateNodeData('proc-1', { processingTime: 12, resources: 1 });
     useStore.getState().updateNodeData('start-1', { sourceConfig: { enabled: true, interval: 1, batchSize: 1 } });
     for (let i = 0; i < 120; i++) useStore.getState().tick();
-    const baseline = computeLeadMetrics(useStore.getState().items, { windowSize: 30 }).avgLeadTime;
+    const baseline = computeLeadMetrics(useStore.getState().items, { windowSize: 30 }).avgLeadWorking;
 
     // Improve capacity and processing speed
     useStore.getState().updateNodeData('proc-1', { processingTime: 3, resources: 4 });
     for (let i = 0; i < 120; i++) useStore.getState().tick();
-    const improved = computeLeadMetrics(useStore.getState().items, { windowSize: 30 }).avgLeadTime;
+    const improved = computeLeadMetrics(useStore.getState().items, { windowSize: 30 }).avgLeadWorking;
 
     expect(improved).toBeLessThanOrEqual(baseline);
   });

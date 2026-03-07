@@ -9,9 +9,10 @@ A visual, interactive process flow simulation tool for modeling business process
 - **Drag-and-drop canvas** - Build process flows visually with ReactFlow
 - **Discrete-event simulation** - Run tick-based simulations with configurable speed
 - **Demand-driven mode** - Specify exact demand per hour/day/week/month (working hours, per-node schedules)
-- **Real-time VSM metrics** - Lead time, value-added time, process cycle efficiency (PCE), throughput
+- **Dual flow metrics** - Working lead/throughput for VSM teaching plus elapsed lead/throughput for end-to-end realism
 - **Bottleneck detection** - Visual indicators for queue buildup and capacity issues
 - **Weighted routing** - Configure probability-based routing between nodes
+- **Deterministic replay** - Persist a simulation seed so the same scenario can be rerun exactly
 - **Pre-built scenarios** - DevOps pipeline, Hospital ER, Manufacturing line templates
 - **Import/Export** - Save and load flows as JSON
 
@@ -76,12 +77,21 @@ npm run preview
 
 ## VSM Metrics
 
-- **Lead Time** - Total time items spend in the system
+- **Lead (Working)** - Queue + processing time for completed items
+- **Lead (Elapsed)** - Spawn to completion time for completed items
 - **Value Added Time (VAT)** - Time spent actively processing
-- **Non-Value Added Time (NVAT)** - Queue wait time (transit is visual-only)
-- **Process Cycle Efficiency (PCE)** - VAT / Lead Time (higher is better)
-- **Throughput** - Items completed per completion window (default 50)
+- **Closed Time** - Elapsed time outside queue + processing, usually caused by off-hours
+- **Process Cycle Efficiency (PCE)** - VAT / Lead (Working)
+- **Throughput (Working / Elapsed)** - Completion-window rate per hour from recent end-of-line completions
 - **WIP** - Work in progress (items currently in system)
+
+Run Time = the observation window. Working = queue + processing. Elapsed = spawn to completion.
+
+## Process Box Integration
+
+- Cloud saves persist the canvas layout, simulation settings, and deterministic seed.
+- Process Box run history is recorded only for bounded `target` demand runs that auto-complete.
+- Canvas saves are design-only and do not create Process Box run-history rows.
 
 ## Project Structure
 
@@ -94,7 +104,7 @@ process-flow-simulator/
 │   ├── ProcessNode.tsx  # Process station nodes
 │   ├── StartNode.tsx    # Entry point nodes
 │   ├── EndNode.tsx      # Terminal nodes
-│   ├── ProcessEdge.tsx  # Animated edges with routing
+│   ├── ProcessEdge.tsx  # Routed edges with bend controls
 │   ├── Controls.tsx     # Playback controls
 │   ├── ConfigPanel.tsx  # Node configuration
 │   ├── VSMStats.tsx     # Real-time metrics

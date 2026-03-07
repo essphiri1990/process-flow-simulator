@@ -5,8 +5,17 @@ const DB_VERSION = 1;
 const STORE_NAME = 'canvases';
 const LAST_CANVAS_KEY = 'lastCanvasId';
 
+function hasIndexedDb(): boolean {
+  return typeof indexedDB !== 'undefined';
+}
+
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    if (!hasIndexedDb()) {
+      reject(new Error('IndexedDB is unavailable in this environment.'));
+      return;
+    }
+
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onupgradeneeded = () => {
@@ -22,6 +31,7 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 export async function getAllCanvases(): Promise<CanvasMetadata[]> {
+  if (!hasIndexedDb()) return [];
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly');
@@ -30,7 +40,16 @@ export async function getAllCanvases(): Promise<CanvasMetadata[]> {
 
     request.onsuccess = () => {
       const canvases = (request.result as SavedCanvas[])
-        .map(({ id, name, updatedAt }) => ({ id, name, updatedAt }))
+        .map(({ id, name, updatedAt, data }) => ({
+          id,
+          name,
+          updatedAt,
+          source: 'local' as const,
+          snapshotId: id,
+          nodeCount: Array.isArray(data?.nodes) ? data.nodes.length : 0,
+          edgeCount: Array.isArray(data?.edges) ? data.edges.length : 0,
+          data: data || null,
+        }))
         .sort((a, b) => b.updatedAt - a.updatedAt);
       resolve(canvases);
     };
@@ -39,6 +58,7 @@ export async function getAllCanvases(): Promise<CanvasMetadata[]> {
 }
 
 export async function getCanvas(id: string): Promise<SavedCanvas | undefined> {
+  if (!hasIndexedDb()) return undefined;
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly');
@@ -51,6 +71,7 @@ export async function getCanvas(id: string): Promise<SavedCanvas | undefined> {
 }
 
 export async function saveCanvas(canvas: SavedCanvas): Promise<void> {
+  if (!hasIndexedDb()) return;
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -63,6 +84,7 @@ export async function saveCanvas(canvas: SavedCanvas): Promise<void> {
 }
 
 export async function deleteCanvas(id: string): Promise<void> {
+  if (!hasIndexedDb()) return;
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -75,6 +97,7 @@ export async function deleteCanvas(id: string): Promise<void> {
 }
 
 export async function renameCanvas(id: string, name: string): Promise<void> {
+  if (!hasIndexedDb()) return;
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');

@@ -23,7 +23,7 @@ const DebugOverlay: React.FC = () => {
     metricsWindowCompletions
   } = useStore();
 
-  const { avgLeadTime, avgVAT, pce, sampleSize } = useMemo(
+  const { avgLeadWorking, avgLeadElapsed, avgVAT, avgClosed, pce, sampleSize, throughputElapsedPerHour } = useMemo(
     () => computeLeadMetrics(useStore.getState().items, {
       windowSize: metricsWindowCompletions,
       metricsEpoch
@@ -37,8 +37,7 @@ const DebugOverlay: React.FC = () => {
       .sort((a, b) => (b.completionTick || 0) - (a.completionTick || 0))
       .slice(0, 3)
       .map(it => {
-        const cycle = (it.completionTick as number) - it.spawnTick;
-        const lead = Math.max(0, cycle - it.timeTransit);
+        const lead = it.timeActive + it.timeWaiting;
         return { id: it.id.slice(0, 4), lead, vat: it.timeActive, wait: it.timeWaiting };
       });
     return items;
@@ -55,10 +54,12 @@ const DebugOverlay: React.FC = () => {
       <div className="flex justify-between"><span>speed</span><span>{speedPreset}</span></div>
       <div className="flex justify-between"><span>duration</span><span>{durationPreset}</span></div>
       <div className="flex justify-between"><span>progress</span><span>{simulationProgress.toFixed(1)}%</span></div>
-      <div className="flex justify-between"><span>throughput</span><span>{throughput.toFixed(2)}/hr</span></div>
+      <div className="flex justify-between"><span>throughput w/e</span><span>{throughput.toFixed(2)}/{throughputElapsedPerHour.toFixed(2)}</span></div>
       <div className="flex justify-between"><span>wip/c/f</span><span>{itemCounts.wip}/{itemCounts.completed}/{itemCounts.failed}</span></div>
-      <div className="mt-2 flex justify-between"><span>avg lead</span><span>{avgLeadTime.toFixed(2)}m</span></div>
+      <div className="mt-2 flex justify-between"><span>lead w</span><span>{avgLeadWorking.toFixed(2)}m</span></div>
+      <div className="flex justify-between"><span>lead e</span><span>{avgLeadElapsed.toFixed(2)}m</span></div>
       <div className="flex justify-between"><span>avg VAT</span><span>{avgVAT.toFixed(2)}m</span></div>
+      <div className="flex justify-between"><span>closed</span><span>{avgClosed.toFixed(2)}m</span></div>
       <div className="flex justify-between"><span>PCE</span><span>{pce.toFixed(1)}%</span></div>
       <div className="flex justify-between"><span>n</span><span>{sampleSize}</span></div>
       <div className="flex justify-between"><span>window</span><span>{formatCompletionWindowLabel(metricsWindowCompletions)}</span></div>

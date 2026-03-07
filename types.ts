@@ -3,15 +3,13 @@ import { Node, Edge } from 'reactflow';
 export enum ItemStatus {
   QUEUED = 'QUEUED',
   PROCESSING = 'PROCESSING',
-  TRANSIT = 'TRANSIT',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
 }
 
 export interface ProcessItem {
   id: string;
-  currentNodeId: string | null; // Destination or Current Node
-  fromNodeId: string | null; // Previous Node (for transit)
+  currentNodeId: string | null;
   status: ItemStatus;
   progress: number; // 0 to 100
   remainingTime: number; // in ticks
@@ -29,11 +27,7 @@ export interface ProcessItem {
   // VSM Metrics (Buckets)
   timeActive: number; // Value Added Time (Processing)
   timeWaiting: number; // Non-Value Added Time (Queue)
-  timeTransit: number; // Non-Value Added Time (Transit)
   nodeLeadTime: number; // Time spent in current node (queue + processing while open)
-  
-  // Transit specific
-  transitProgress: number; // 0 to 1 (linear interpolation factor)
 }
 
 export interface NodeStats {
@@ -112,6 +106,26 @@ export interface HistoryEntry {
   throughput: number; // Rolling average
 }
 
+export interface CompletionMetrics {
+  avgLeadWorking: number;
+  avgLeadElapsed: number;
+  avgClosed: number;
+  avgVAT: number;
+  pce: number;
+  throughputWorkingPerHour: number;
+  throughputElapsedPerHour: number;
+  sampleSize: number;
+  windowSize: number;
+}
+
+export interface VisualTransfer {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  startedAtMs: number;
+  durationMs: number;
+}
+
 export interface ItemConfig {
   color: string; // hex
   shape: 'circle' | 'square' | 'rounded';
@@ -135,13 +149,17 @@ export const TIME_UNIT_PRESETS: Record<string, TimeUnitConfig> = {
 
 // Helper: Apply variability to a base processing time
 // Uses triangular distribution centered on the base time
-export const applyVariability = (baseTime: number, variability: number): number => {
+export const applyVariability = (
+  baseTime: number,
+  variability: number,
+  random: () => number = Math.random
+): number => {
   if (variability <= 0 || baseTime <= 0) return baseTime;
   // Generate triangular-distributed random value
-  const u = Math.random();
+  const u = random();
   const spread = baseTime * variability;
   // Triangular distribution: peaks at center, ranges from -spread to +spread
-  const offset = spread * (u + Math.random() - 1); // sum of 2 uniforms approximates triangular
+  const offset = spread * (u + random() - 1); // sum of 2 uniforms approximates triangular
   return Math.max(1, Math.round(baseTime + offset));
 };
 
@@ -275,13 +293,13 @@ export interface ItemCounts {
   failed: number;
   queued: number;
   processing: number;
-  transit: number;
   stuck: number;
 }
 
 // --- CANVAS MANAGEMENT ---
 
 export interface CanvasFlowData {
+  workspaceId?: string;
   nodes: AppNode[];
   edges: Edge[];
   itemConfig: ItemConfig;
@@ -289,10 +307,10 @@ export interface CanvasFlowData {
   durationPreset: string;
   speedPreset: string;
   autoStopEnabled: boolean;
-  countTransitInClock: boolean;
   metricsWindowCompletions: number;
   demandMode: DemandMode;
   demandUnit: DemandUnit;
+  simulationSeed: number;
 }
 
 export interface SavedCanvas {
@@ -307,6 +325,31 @@ export interface CanvasMetadata {
   id: string;
   name: string;
   updatedAt: number;
+  source: 'cloud' | 'local';
+  snapshotId?: string | null;
+  nodeCount: number;
+  edgeCount: number;
+  data?: CanvasFlowData | null;
+}
+
+export interface RunSummary {
+  score: number;
+  outcome: string;
+  arrivals: number;
+  completed: number;
+  backlogEnd: number;
+  wipEnd: number;
+  workingLeadAvg: number;
+  elapsedLeadAvg: number;
+  workingThroughput: number;
+  elapsedThroughput: number;
+  seed: number;
+  durationPreset: string;
+  demandMode: DemandMode;
+  wallClockDurationMs: number;
+  simulatedTicks: number;
+  canvasId: string | null;
+  canvasName: string;
 }
 
 export interface SimulationState {
@@ -318,9 +361,7 @@ export interface SimulationState {
   tickCount: number;
   cumulativeCompleted: number;
   throughput: number;                 // rolling items/hour
-  cumulativeTransitTicks: number;     // total ticks spent in transit (for display clock policy)
-  displayTickCount: number;           // user-facing clock, may exclude transit depending on policy
-  countTransitInClock: boolean;       // policy toggle
+  displayTickCount: number;           // user-facing observation clock
 
   // Analytics
   history: HistoryEntry[];
@@ -339,6 +380,7 @@ export interface SimulationState {
   // Performance: Pre-computed derived state
   itemsByNode: Map<string, ProcessItem[]>;
   itemCounts: ItemCounts;
+  visualTransfers: VisualTransfer[];
 
   // Configuration
   itemConfig: ItemConfig;
@@ -353,6 +395,10 @@ export interface SimulationState {
   ticksPerSecond: number; // Current simulation speed
   simulationProgress: number; // 0 to 100
   autoStopEnabled: boolean; // Stop when targetDuration reached
+  simulationSeed: number;
+  runStartedAtMs: number | null;
+  lastRunSummary: RunSummary | null;
+  lastLoggedRunKey: string | null;
 
   // Actions
   setNodes: (nodes: AppNode[]) => void;
@@ -379,7 +425,8 @@ export interface SimulationState {
   setDurationPreset: (preset: string) => void;
   setSpeedPreset: (preset: string) => void;
   setAutoStop: (enabled: boolean) => void;
-  setCountTransitInClock: (count: boolean) => void;
+  setSimulationSeed: (seed: number) => void;
+  randomizeSimulationSeed: () => void;
 
   // Simulation Actions
   startSimulation: () => void;

@@ -81,119 +81,119 @@ const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) =>
 
       {/* Sidebar Panel */}
       <aside
-        className={`fixed top-0 left-0 bottom-0 w-72 bg-white/95 backdrop-blur-md border-r border-slate-200/60 shadow-xl z-30 flex flex-col transform transition-transform duration-300 ease-in-out ${
-          isOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed top-3 left-3 bottom-[80px] w-64 bg-white/95 backdrop-blur-lg border border-slate-200/60 shadow-2xl z-30 flex flex-col rounded-2xl transform transition-transform duration-300 ease-in-out ${
+          isOpen ? 'translate-x-0' : '-translate-x-[calc(100%+12px)]'
         }`}
       >
-        {/* Header: Logo + Close */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 pt-4 pb-3 flex-shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-blue-600 rounded-[10px] flex items-center justify-center shadow-md shadow-indigo-200/50 ring-1 ring-indigo-500/10">
-              <Layers size={16} className="text-white" strokeWidth={2.5} />
+            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-blue-600 rounded-xl flex items-center justify-center shadow-md shadow-indigo-200/50">
+              <Layers size={15} className="text-white" strokeWidth={2.5} />
             </div>
             <div>
-              <h1 className="text-[13px] font-semibold text-slate-900 tracking-tight leading-none">Process Flow</h1>
+              <h1 className="text-sm font-semibold text-slate-900 leading-none">Process Flow</h1>
               <p className="text-[10px] text-slate-400 mt-0.5 font-medium">Simulator</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all duration-150"
+            className="p-1.5 rounded-lg text-slate-300 hover:bg-slate-100 hover:text-slate-500 transition-all"
           >
-            <X size={16} />
+            <X size={14} />
           </button>
         </div>
 
         {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto">
-          {/* Node Tools */}
-          <div className="px-4 py-3 border-b border-slate-100">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">Node Tools</span>
-            <div className="space-y-0.5">
+        <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-3">
+
+          {/* Node Tools — 2x2 Grid */}
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">Nodes</span>
+            <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={() => { addStartNode(); onClose(); }}
-                className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 active:scale-[0.98] transition-all duration-150"
+                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-emerald-50 hover:border-emerald-200 active:scale-[0.97] transition-all"
               >
-                <PlayCircle size={16} className="text-emerald-500 group-hover:text-emerald-600 transition-colors" />
-                Start
+                <PlayCircle size={18} className="text-emerald-500 group-hover:text-emerald-600 transition-colors" />
+                <span className="text-[11px] font-medium text-slate-500 group-hover:text-emerald-700">Start</span>
               </button>
               <button
                 onClick={() => { addNode(); onClose(); }}
-                className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-blue-50 hover:text-blue-700 active:scale-[0.98] transition-all duration-150"
+                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-blue-50 hover:border-blue-200 active:scale-[0.97] transition-all"
               >
-                <PlusCircle size={16} className="text-blue-500 group-hover:text-blue-600 transition-colors" />
-                Process
+                <PlusCircle size={18} className="text-blue-500 group-hover:text-blue-600 transition-colors" />
+                <span className="text-[11px] font-medium text-slate-500 group-hover:text-blue-700">Process</span>
               </button>
               <button
                 onClick={() => { addEndNode(); onClose(); }}
-                className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-800 active:scale-[0.98] transition-all duration-150"
+                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-slate-100 hover:border-slate-200 active:scale-[0.97] transition-all"
               >
-                <StopCircle size={16} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
-                End
+                <StopCircle size={18} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
+                <span className="text-[11px] font-medium text-slate-500 group-hover:text-slate-700">End</span>
               </button>
               <button
                 onClick={() => { addAnnotation(); onClose(); }}
-                className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-amber-50 hover:text-amber-700 active:scale-[0.98] transition-all duration-150"
+                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-amber-50 hover:border-amber-200 active:scale-[0.97] transition-all"
               >
-                <StickyNote size={16} className="text-amber-400 group-hover:text-amber-500 transition-colors" />
-                Note
+                <StickyNote size={18} className="text-amber-400 group-hover:text-amber-500 transition-colors" />
+                <span className="text-[11px] font-medium text-slate-500 group-hover:text-amber-700">Note</span>
               </button>
             </div>
           </div>
 
-          {/* Scenario Selector */}
-          <div className="px-4 py-3 border-b border-slate-100">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">Scenario</span>
+          {/* Scenario */}
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">Scenario</span>
             <div className="relative">
-              <div className="flex items-center gap-2 bg-slate-100/80 hover:bg-slate-100 border border-transparent hover:border-slate-200/60 px-3 py-2 rounded-lg transition-all duration-150 cursor-pointer">
-                <Sparkles size={13} className="text-indigo-400" />
-                <select
-                  className="bg-transparent text-xs font-medium text-slate-600 outline-none cursor-pointer pr-5 appearance-none w-full"
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setConfirmAction({
-                      title: 'Switch Scenario',
-                      message: 'This will replace your current canvas. Any unsaved work will be lost.',
-                      confirmLabel: 'Switch',
-                      action: () => { loadScenario(val); onClose(); },
-                    });
-                  }}
-                  defaultValue="devops"
-                >
-                  <option value="devops">DevOps Pipeline</option>
-                  <option value="coffee">Coffee Service</option>
-                  <option value="hospital">Hospital ER Triage</option>
-                  <option value="manufacturing">Manufacturing Line</option>
-                  <option value="empty">Empty Canvas</option>
-                </select>
-                <ChevronDown size={12} className="text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
+              <select
+                className="w-full appearance-none bg-slate-50 border border-slate-100 hover:border-slate-200 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-600 outline-none cursor-pointer hover:bg-slate-100 transition-all pr-8"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setConfirmAction({
+                    title: 'Switch Scenario',
+                    message: 'This will replace your current canvas. Any unsaved work will be lost.',
+                    confirmLabel: 'Switch',
+                    action: () => { loadScenario(val); onClose(); },
+                  });
+                }}
+                defaultValue="devops"
+              >
+                <option value="devops">DevOps Pipeline</option>
+                <option value="coffee">Coffee Service</option>
+                <option value="hospital">Hospital ER Triage</option>
+                <option value="manufacturing">Manufacturing Line</option>
+                <option value="empty">Empty Canvas</option>
+              </select>
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             </div>
           </div>
 
-          {/* Canvas Manager */}
-          <div className="px-4 py-3 border-b border-slate-100">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">Canvas</span>
+          {/* Canvas */}
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">Canvas</span>
             <CanvasManager />
           </div>
 
-          {/* File Operations */}
-          <div className="px-4 py-3 border-b border-slate-100">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">File</span>
-            <div className="space-y-0.5">
+          {/* File Actions — Compact Row */}
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">File</span>
+            <div className="flex gap-1.5">
               <button
                 onClick={exportJson}
-                className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-800 active:scale-[0.98] transition-all duration-150"
+                className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-500 hover:bg-slate-100 hover:border-slate-200 hover:text-slate-700 active:scale-[0.97] transition-all"
+                title="Export JSON"
               >
-                <Download size={16} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
-                Export JSON
+                <Download size={14} />
+                <span className="text-[11px] font-medium">Export</span>
               </button>
               <button
                 onClick={handleImportClick}
-                className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-800 active:scale-[0.98] transition-all duration-150"
+                className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-500 hover:bg-slate-100 hover:border-slate-200 hover:text-slate-700 active:scale-[0.97] transition-all"
+                title="Import JSON"
               >
-                <Upload size={16} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
-                Import JSON
+                <Upload size={14} />
+                <span className="text-[11px] font-medium">Import</span>
               </button>
               <input
                 type="file"
@@ -211,23 +211,23 @@ const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) =>
                     action: () => { clearCanvas(); onClose(); },
                   });
                 }}
-                className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-red-50 hover:text-red-500 active:scale-[0.98] transition-all duration-150"
+                className="flex items-center justify-center w-9 py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-400 hover:bg-red-50 hover:border-red-200 hover:text-red-500 active:scale-[0.97] transition-all"
+                title="Clear Canvas"
               >
-                <Trash2 size={16} className="text-slate-400 group-hover:text-red-500 transition-colors" />
-                Clear Canvas
+                <Trash2 size={14} />
               </button>
             </div>
           </div>
         </div>
 
-        {/* Footer: Settings */}
-        <div className="flex-shrink-0 border-t border-slate-100 px-4 py-3">
+        {/* Footer */}
+        <div className="flex-shrink-0 px-3 pb-3">
           <button
             onClick={() => { onOpenSettings(); onClose(); }}
-            className="group flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-800 active:scale-[0.98] transition-all duration-150"
+            className="flex items-center justify-center gap-2 w-full py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-500 hover:bg-slate-100 hover:border-slate-200 hover:text-slate-700 active:scale-[0.97] transition-all"
           >
-            <Settings size={16} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
-            Settings
+            <Settings size={14} />
+            <span className="text-[11px] font-medium">Settings</span>
           </button>
         </div>
       </aside>

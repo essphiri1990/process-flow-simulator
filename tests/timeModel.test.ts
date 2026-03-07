@@ -1,36 +1,43 @@
-import { describe, it, expect } from 'vitest';
-import { computeTransitDuration, computeDisplayTickCount } from '../timeModel';
+import { describe, expect, it } from 'vitest';
+
+import {
+  computeOpenTicksForPeriod,
+  isWorkingTick,
+  normalizeWorkingHours,
+} from '../timeModel';
 
 describe('timeModel', () => {
-  describe('computeTransitDuration', () => {
-    it('uses custom transit time when provided', () => {
-      expect(computeTransitDuration(999, 12)).toBe(12);
-    });
-
-    it('clamps small distances to minimum of 5 ticks', () => {
-      expect(computeTransitDuration(50)).toBe(5);
-    });
-
-    it('scales distance to ticks (400px -> ~16 ticks)', () => {
-      expect(computeTransitDuration(400)).toBe(16);
-    });
-
-    it('caps large distances at 30 ticks', () => {
-      expect(computeTransitDuration(2000)).toBe(30);
+  describe('normalizeWorkingHours', () => {
+    it('clamps hours per day and days per week into supported bounds', () => {
+      expect(normalizeWorkingHours({ enabled: true, hoursPerDay: 12, daysPerWeek: 9 })).toEqual({
+        enabled: true,
+        hoursPerDay: 8,
+        daysPerWeek: 5,
+      });
     });
   });
 
-  describe('computeDisplayTickCount', () => {
-    it('excludes transit when policy is false', () => {
-      const tickCount = 120; // 2 hours
-      const cumulativeTransit = 30; // 30 minutes spent in transit
-      expect(computeDisplayTickCount(tickCount, cumulativeTransit, { countTransitInClock: false })).toBe(90);
+  describe('isWorkingTick', () => {
+    it('returns true during configured working time', () => {
+      expect(isWorkingTick(120, { enabled: true, hoursPerDay: 8, daysPerWeek: 5 })).toBe(true);
     });
 
-    it('includes transit when policy is true', () => {
-      const tickCount = 120;
-      const cumulativeTransit = 30;
-      expect(computeDisplayTickCount(tickCount, cumulativeTransit, { countTransitInClock: true })).toBe(120);
+    it('returns false outside configured working time', () => {
+      expect(isWorkingTick(300, { enabled: true, hoursPerDay: 4, daysPerWeek: 5 })).toBe(false);
+    });
+  });
+
+  describe('computeOpenTicksForPeriod', () => {
+    it('returns total ticks when working hours are disabled', () => {
+      expect(computeOpenTicksForPeriod(120, { enabled: false, hoursPerDay: 8, daysPerWeek: 5 })).toBe(120);
+    });
+
+    it('returns open ticks for one simulated week', () => {
+      expect(computeOpenTicksForPeriod(2400, { enabled: true, hoursPerDay: 8, daysPerWeek: 5 })).toBe(2400);
+    });
+
+    it('caps partial days to configured open hours', () => {
+      expect(computeOpenTicksForPeriod(480, { enabled: true, hoursPerDay: 4, daysPerWeek: 5 })).toBe(240);
     });
   });
 });

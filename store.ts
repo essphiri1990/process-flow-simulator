@@ -30,18 +30,27 @@ import {
   DemandUnit,
   DEFAULT_WORKING_HOURS,
   WorkingHoursConfig,
+  RunSummary,
+  VisualTransfer,
 } from './types';
 import {
-  computeTransitDuration,
-  computeDisplayTickCount,
-  DEFAULT_CLOCK_POLICY,
   computeOpenTicksForPeriod,
   isWorkingTick,
   normalizeWorkingHours,
 } from './timeModel';
 import { showToast } from './components/Toast';
-import { computeThroughputFromCompletions } from './metrics';
+import { computeLeadMetrics, computeThroughputFromCompletions } from './metrics';
 import { getProcessBoxSdk } from './processBoxSdk';
+import { createRandomSeed, nextMulberry32, normalizeSeed } from './rng';
+import {
+  deleteCanvas,
+  getAllCanvases,
+  getCanvas,
+  getLastCanvasId,
+  renameCanvas,
+  saveCanvas,
+  setLastCanvasId,
+} from './canvas-storage';
 
 // Simple UUID generator
 const generateId = () => {
@@ -54,8 +63,81 @@ const generateId = () => {
   });
 };
 
+const DEFAULT_SIMULATION_SEED = createRandomSeed();
+let simulationRngState = DEFAULT_SIMULATION_SEED;
+const visualTransferCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+const resetSimulationRng = (seed: number) => {
+  simulationRngState = normalizeSeed(seed, DEFAULT_SIMULATION_SEED);
+};
+
+const nextSimulationRandom = () => {
+  const next = nextMulberry32(simulationRngState);
+  simulationRngState = next.state;
+  return next.value;
+};
+
 const DEFAULT_SOURCE_CONFIG = { enabled: false, interval: 20, batchSize: 1 };
+const MAX_VISUAL_TRANSFERS = 120;
 const createDefaultWorkingHours = (): WorkingHoursConfig => ({ ...DEFAULT_WORKING_HOURS });
+const createEmptyItemCounts = () => ({
+  wip: 0,
+  completed: 0,
+  failed: 0,
+  queued: 0,
+  processing: 0,
+  stuck: 0,
+});
+
+const createQueuedItem = (targetNodeId: string, tick: number, metricsEpoch: number): ProcessItem => ({
+  id: generateId(),
+  currentNodeId: targetNodeId,
+  status: ItemStatus.QUEUED,
+  progress: 0,
+  remainingTime: 0,
+  processingDuration: 0,
+  totalTime: 0,
+  nodeEnterTick: tick,
+  metricsEpoch,
+  timeActive: 0,
+  timeWaiting: 0,
+  nodeLeadTime: 0,
+  spawnTick: tick,
+  completionTick: null,
+  terminalNodeId: null,
+});
+
+const buildRunStateReset = () => ({
+  items: [] as ProcessItem[],
+  isRunning: false,
+  tickCount: 0,
+  displayTickCount: 0,
+  cumulativeCompleted: 0,
+  throughput: 0,
+  simulationProgress: 0,
+  history: [] as HistoryEntry[],
+  metricsEpoch: 0,
+  metricsEpochTick: 0,
+  demandArrivalsGenerated: 0,
+  demandArrivalsByNode: {} as Record<string, number>,
+  demandAccumulatorByNode: {} as Record<string, number>,
+  demandOpenTicksByNode: {} as Record<string, number>,
+  periodCompleted: 0,
+  itemsByNode: new Map<string, ProcessItem[]>(),
+  itemCounts: createEmptyItemCounts(),
+  visualTransfers: [] as VisualTransfer[],
+  runStartedAtMs: null,
+  lastRunSummary: null as RunSummary | null,
+  lastLoggedRunKey: null as string | null,
+});
+
+const getVisualTransferDurationMs = (ticksPerSecond: number): number => {
+  if (ticksPerSecond === -1) return 180;
+  if (ticksPerSecond >= 3600) return 220;
+  if (ticksPerSecond >= 600) return 280;
+  if (ticksPerSecond >= 60) return 420;
+  return 620;
+};
 
 const hasWorkingHoursChanged = (
   prev?: WorkingHoursConfig,
@@ -130,6 +212,16 @@ const normalizeCanvasName = (value: unknown): string => {
   return trimmed || 'Untitled Canvas';
 };
 
+const normalizeWorkspaceId = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+
+const resolveSnapshotWorkspaceId = (snapshot: any, fallbackId?: unknown): string | null => {
+  return normalizeWorkspaceId(snapshot?.workspaceId) || normalizeWorkspaceId(fallbackId);
+};
+
 const resolveCloudSaveCanvasName = (entry: any): string => {
   const stateName = entry?.state_json?.canvasName;
   if (typeof stateName === 'string' && stateName.trim()) {
@@ -146,6 +238,62 @@ const parseCloudSaveUpdatedAt = (entry: any): number => {
   const parsed = Date.parse(raw || '');
   return Number.isFinite(parsed) ? parsed : Date.now();
 };
+
+const createWorkspaceId = () => `workspace_${generateId()}`;
+
+const ensureWorkspaceId = (candidate: unknown): string => normalizeWorkspaceId(candidate) || createWorkspaceId();
+
+const createFlowSnapshot = (
+  state: Pick<
+    SimulationState,
+    | 'nodes'
+    | 'edges'
+    | 'itemConfig'
+    | 'defaultHeaderColor'
+    | 'durationPreset'
+    | 'speedPreset'
+    | 'autoStopEnabled'
+    | 'metricsWindowCompletions'
+    | 'demandMode'
+    | 'demandUnit'
+    | 'simulationSeed'
+  >,
+  options: {
+    workspaceId?: string | null;
+    canvasName?: string | null;
+  } = {},
+): CanvasFlowData & { canvasName: string } => ({
+  workspaceId: normalizeWorkspaceId(options.workspaceId) || undefined,
+  nodes: state.nodes,
+  edges: state.edges,
+  itemConfig: state.itemConfig,
+  defaultHeaderColor: state.defaultHeaderColor,
+  durationPreset: state.durationPreset,
+  speedPreset: state.speedPreset,
+  autoStopEnabled: state.autoStopEnabled,
+  metricsWindowCompletions: state.metricsWindowCompletions,
+  demandMode: state.demandMode,
+  demandUnit: state.demandUnit,
+  simulationSeed: state.simulationSeed,
+  canvasName: normalizeCanvasName(options.canvasName),
+});
+
+const buildCanvasMetadataFromSnapshot = (
+  source: 'cloud' | 'local',
+  id: string,
+  updatedAt: number,
+  snapshot: any,
+  snapshotId?: string | null,
+) => ({
+  id,
+  name: normalizeCanvasName(snapshot?.canvasName),
+  updatedAt,
+  source,
+  snapshotId: snapshotId ?? null,
+  nodeCount: Array.isArray(snapshot?.nodes) ? snapshot.nodes.length : 0,
+  edgeCount: Array.isArray(snapshot?.edges) ? snapshot.edges.length : 0,
+  data: snapshot || null,
+});
 
 const applyCloudFlowSnapshot = (
   setState: (partial: Partial<SimulationState>) => void,
@@ -165,7 +313,10 @@ const applyCloudFlowSnapshot = (
   const speedConfig = SPEED_PRESETS.find((s) => s.key === snapshot.speedPreset) || SPEED_PRESETS[1];
   const demandMode = (snapshot.demandMode as DemandMode) || 'auto';
   const demandUnit = (snapshot.demandUnit as DemandUnit) || 'week';
+  const simulationSeed = normalizeSeed(snapshot.simulationSeed, getState().simulationSeed);
   const nextCanvasName = normalizeCanvasName(options.canvasName || snapshot.canvasName || getState().currentCanvasName);
+  resetSimulationRng(simulationSeed);
+  clearVisualTransferCleanupTimers();
 
   setState({
     nodes: snapshot.nodes,
@@ -177,33 +328,18 @@ const applyCloudFlowSnapshot = (
     speedPreset: snapshot.speedPreset || '1x',
     ticksPerSecond: speedConfig.ticksPerSecond,
     autoStopEnabled: snapshot.autoStopEnabled !== undefined ? snapshot.autoStopEnabled : true,
-    countTransitInClock:
-      snapshot.countTransitInClock !== undefined ? snapshot.countTransitInClock : DEFAULT_CLOCK_POLICY.countTransitInClock,
     metricsWindowCompletions: Number.isFinite(snapshot.metricsWindowCompletions)
       ? snapshot.metricsWindowCompletions
       : getState().metricsWindowCompletions,
     demandMode,
     demandUnit,
     demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
-    items: [],
-    isRunning: false,
-    tickCount: 0,
-    displayTickCount: 0,
-    cumulativeTransitTicks: 0,
-    cumulativeCompleted: 0,
-    throughput: 0,
-    simulationProgress: 0,
-    history: [],
-    metricsEpoch: 0,
-    metricsEpochTick: 0,
-    demandArrivalsGenerated: 0,
-    demandArrivalsByNode: {},
-    demandAccumulatorByNode: {},
-    demandOpenTicksByNode: {},
-    periodCompleted: 0,
-    itemsByNode: new Map(),
-    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
-    currentCanvasId: options.canvasId === undefined ? getState().currentCanvasId : options.canvasId,
+    simulationSeed,
+    ...buildRunStateReset(),
+    currentCanvasId:
+      options.canvasId === undefined
+        ? resolveSnapshotWorkspaceId(snapshot, getState().currentCanvasId)
+        : options.canvasId,
     currentCanvasName: nextCanvasName,
   });
 
@@ -212,35 +348,6 @@ const applyCloudFlowSnapshot = (
   }
 
   return true;
-};
-
-
-const getNextNodeId = (sourceNode: ProcessNode | StartNode, nodes: AppNode[], edges: Edge[]): string | null => {
-  const outgoingEdges = edges.filter((edge) => edge.source === sourceNode.id);
-  
-  if (outgoingEdges.length === 0) return null;
-  if (outgoingEdges.length === 1) return outgoingEdges[0].target;
-
-  // Weighted Random Logic
-  const weights = sourceNode.data.routingWeights || {};
-  
-  // Create a map of targetId -> weight (default to 1 if not set)
-  const choices = outgoingEdges.map(edge => ({
-    targetId: edge.target,
-    weight: weights[edge.target] !== undefined ? weights[edge.target] : 1
-  }));
-
-  const totalWeight = choices.reduce((sum, choice) => sum + choice.weight, 0);
-  let random = Math.random() * totalWeight;
-
-  for (const choice of choices) {
-    if (random < choice.weight) {
-      return choice.targetId;
-    }
-    random -= choice.weight;
-  }
-
-  return outgoingEdges[outgoingEdges.length - 1].target; // Fallback
 };
 
 // --- SCENARIO DATA ---
@@ -254,7 +361,7 @@ const SCENARIOS = {
       { id: 'coffee-brew', type: 'processNode', position: { x: 840, y: 180 }, data: { label: 'Brew Coffee', processingTime: 6, resources: 1, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
       { id: 'coffee-serve', type: 'processNode', position: { x: 1220, y: 180 }, data: { label: 'Serve Cup', processingTime: 2, resources: 1, quality: 1.0, variability: 0, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
       { id: 'coffee-end', type: 'endNode', position: { x: 1600, y: 180 }, data: { label: 'Customer Served', processingTime: 0, resources: 999, quality: 1.0, variability: 0, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
-      { id: 'coffee-note', type: 'annotationNode', position: { x: 840, y: 420 }, data: { label: 'Lead = queue + processing time. Transit is visual-only for VSM metrics.' } },
+      { id: 'coffee-note', type: 'annotationNode', position: { x: 840, y: 420 }, data: { label: 'Lead = queue + processing time. Run Time = the observation window.' } },
     ],
     edges: [
       { id: 'c1', source: 'coffee-start', target: 'coffee-grind', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
@@ -350,6 +457,14 @@ const SCENARIOS = {
   }
 };
 
+const SCENARIO_NAMES: Record<string, string> = {
+  empty: 'Untitled Canvas',
+  coffee: 'Coffee Service',
+  devops: 'DevOps Pipeline',
+  hospital: 'Hospital ER Triage',
+  manufacturing: 'Manufacturing Line',
+};
+
 const initialNodes: AppNode[] = SCENARIOS['devops'].nodes as AppNode[];
 const initialEdges: Edge[] = SCENARIOS['devops'].edges as Edge[];
 
@@ -357,7 +472,7 @@ const initialEdges: Edge[] = SCENARIOS['devops'].edges as Edge[];
 const computeDerivedState = (items: ProcessItem[]) => {
   const itemsByNode = new Map<string, ProcessItem[]>();
   let wip = 0, completed = 0, failed = 0;
-  let queued = 0, processing = 0, transit = 0, stuck = 0;
+  let queued = 0, processing = 0, stuck = 0;
 
   for (const item of items) {
     if (item.status === ItemStatus.COMPLETED) {
@@ -374,8 +489,6 @@ const computeDerivedState = (items: ProcessItem[]) => {
         queued++;
       } else if (item.status === ItemStatus.PROCESSING) {
         processing++;
-      } else if (item.status === ItemStatus.TRANSIT) {
-        transit++;
       } else {
         stuck++;
       }
@@ -389,7 +502,90 @@ const computeDerivedState = (items: ProcessItem[]) => {
     }
   }
 
-  return { itemsByNode, itemCounts: { wip, completed, failed, queued, processing, transit, stuck } };
+  return { itemsByNode, itemCounts: { wip, completed, failed, queued, processing, stuck } };
+};
+
+const buildRunSummaryKey = (summary: RunSummary) =>
+  [
+    summary.canvasId || 'local',
+    summary.canvasName,
+    summary.seed,
+    summary.durationPreset,
+    summary.demandMode,
+    summary.simulatedTicks,
+    summary.arrivals,
+    summary.completed,
+    summary.outcome
+  ].join(':');
+
+const buildRunSummary = (
+  state: Pick<
+    SimulationState,
+    | 'items'
+    | 'itemCounts'
+    | 'metricsWindowCompletions'
+    | 'metricsEpoch'
+    | 'demandArrivalsGenerated'
+    | 'periodCompleted'
+    | 'simulationSeed'
+    | 'durationPreset'
+    | 'demandMode'
+    | 'runStartedAtMs'
+    | 'currentCanvasId'
+    | 'currentCanvasName'
+  >,
+  simulatedTicks: number,
+  outcome: string
+): RunSummary => {
+  const metrics = computeLeadMetrics(state.items, {
+    windowSize: Math.max(1, state.metricsWindowCompletions),
+    metricsEpoch: state.metricsEpoch
+  });
+  const arrivals = state.demandArrivalsGenerated;
+  const completed = state.periodCompleted;
+  const score = arrivals > 0 ? (completed / Math.max(arrivals, 1)) * 100 : 0;
+  const wallClockDurationMs = state.runStartedAtMs ? Math.max(0, Date.now() - state.runStartedAtMs) : 0;
+
+  return {
+    score: Number(score.toFixed(2)),
+    outcome,
+    arrivals,
+    completed,
+    backlogEnd: Math.max(0, arrivals - completed),
+    wipEnd: state.itemCounts.wip,
+    workingLeadAvg: Number(metrics.avgLeadWorking.toFixed(2)),
+    elapsedLeadAvg: Number(metrics.avgLeadElapsed.toFixed(2)),
+    workingThroughput: Number(metrics.throughputWorkingPerHour.toFixed(2)),
+    elapsedThroughput: Number(metrics.throughputElapsedPerHour.toFixed(2)),
+    seed: state.simulationSeed,
+    durationPreset: state.durationPreset,
+    demandMode: state.demandMode,
+    wallClockDurationMs,
+    simulatedTicks,
+    canvasId: state.currentCanvasId,
+    canvasName: normalizeCanvasName(state.currentCanvasName)
+  };
+};
+
+const scheduleVisualTransferCleanup = (
+  transferId: string,
+  durationMs: number,
+  setState: (partial: Partial<SimulationState> | ((state: SimulationState) => Partial<SimulationState>)) => void,
+) => {
+  const timer = setTimeout(() => {
+    visualTransferCleanupTimers.delete(transferId);
+    setState((state) => ({
+      visualTransfers: state.visualTransfers.filter((transfer) => transfer.id !== transferId)
+    }));
+  }, Math.max(0, durationMs));
+  visualTransferCleanupTimers.set(transferId, timer);
+};
+
+const clearVisualTransferCleanupTimers = () => {
+  for (const timer of visualTransferCleanupTimers.values()) {
+    clearTimeout(timer);
+  }
+  visualTransferCleanupTimers.clear();
 };
 
 export const useStore = create<SimulationState>((set, get) => ({
@@ -401,9 +597,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   tickCount: 0,
   cumulativeCompleted: 0,
   throughput: 0,
-  cumulativeTransitTicks: 0,
   displayTickCount: 0,
-  countTransitInClock: DEFAULT_CLOCK_POLICY.countTransitInClock,
   history: [],
   metricsEpoch: 0,
   metricsEpochTick: 0,
@@ -419,7 +613,8 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   // Performance: Pre-computed derived state
   itemsByNode: new Map(),
-  itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+  itemCounts: createEmptyItemCounts(),
+  visualTransfers: [],
 
   // Default Item Config
   itemConfig: {
@@ -444,6 +639,10 @@ export const useStore = create<SimulationState>((set, get) => ({
   ticksPerSecond: 60,
   simulationProgress: 0,
   autoStopEnabled: true,
+  simulationSeed: DEFAULT_SIMULATION_SEED,
+  runStartedAtMs: null,
+  lastRunSummary: null,
+  lastLoggedRunKey: null,
 
   // Canvas identity
   currentCanvasId: null,
@@ -467,26 +666,14 @@ export const useStore = create<SimulationState>((set, get) => ({
       const demandTotalTicks = DEMAND_UNIT_TICKS[state.demandUnit];
       const durationPreset = mode === 'target' ? getDemandDurationPreset(state.demandUnit) : state.durationPreset;
       const targetDuration = mode === 'target' ? demandTotalTicks : state.targetDuration;
+      resetSimulationRng(state.simulationSeed);
       return {
         demandMode: mode,
         demandTotalTicks,
         durationPreset,
         targetDuration,
         autoStopEnabled: mode === 'target' ? true : state.autoStopEnabled,
-        demandArrivalsGenerated: 0,
-        demandArrivalsByNode: {},
-        demandAccumulatorByNode: {},
-        demandOpenTicksByNode: {},
-        periodCompleted: 0,
-        items: [],
-        history: [],
-        cumulativeCompleted: 0,
-        throughput: 0,
-        tickCount: 0,
-        displayTickCount: 0,
-        cumulativeTransitTicks: 0,
-        metricsEpoch: 0,
-        metricsEpochTick: 0
+        ...buildRunStateReset()
       };
     });
   },
@@ -496,25 +683,13 @@ export const useStore = create<SimulationState>((set, get) => ({
       const demandTotalTicks = DEMAND_UNIT_TICKS[unit];
       const durationPreset = state.demandMode === 'target' ? getDemandDurationPreset(unit) : state.durationPreset;
       const targetDuration = state.demandMode === 'target' ? demandTotalTicks : state.targetDuration;
+      resetSimulationRng(state.simulationSeed);
       return {
         demandUnit: unit,
         demandTotalTicks,
         durationPreset,
         targetDuration,
-        demandArrivalsGenerated: 0,
-        demandArrivalsByNode: {},
-        demandAccumulatorByNode: {},
-        demandOpenTicksByNode: {},
-        periodCompleted: 0,
-        items: [],
-        history: [],
-        cumulativeCompleted: 0,
-        throughput: 0,
-        tickCount: 0,
-        displayTickCount: 0,
-        cumulativeTransitTicks: 0,
-        metricsEpoch: 0,
-        metricsEpochTick: 0
+        ...buildRunStateReset()
       };
     });
   },
@@ -543,7 +718,17 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   setAutoStop: (enabled: boolean) => set({ autoStopEnabled: enabled }),
 
-  setCountTransitInClock: (count: boolean) => set({ countTransitInClock: count }),
+  setSimulationSeed: (seed: number) => {
+    const normalized = normalizeSeed(seed, get().simulationSeed);
+    resetSimulationRng(normalized);
+    set({ simulationSeed: normalized });
+  },
+
+  randomizeSimulationSeed: () => {
+    const simulationSeed = createRandomSeed();
+    resetSimulationRng(simulationSeed);
+    set({ simulationSeed });
+  },
 
   onNodesChange: (changes: NodeChange[]) => {
     set({
@@ -575,22 +760,11 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   updateEdgeData: (id: string, data: Record<string, any>) => {
-    set((state) => {
-      const edge = state.edges.find(e => e.id === id);
-      const prevTransit = (edge as any)?.data?.transitTime;
-      const nextTransit = data?.transitTime;
-      const transitChanged = Object.prototype.hasOwnProperty.call(data, 'transitTime') && nextTransit !== prevTransit;
-
-      const nextEdges = state.edges.map(e =>
+    set((state) => ({
+      edges: state.edges.map(e =>
         e.id === id ? { ...e, data: { ...(e as any).data, ...data } } : e
-      );
-
-      if (!transitChanged) {
-        return { edges: nextEdges };
-      }
-
-      return { edges: nextEdges, ...buildMetricsReset(state) };
-    });
+      )
+    }));
   },
 
   reconnectEdge: (oldEdge: Edge, newConnection: Connection) => {
@@ -619,7 +793,7 @@ export const useStore = create<SimulationState>((set, get) => ({
     const updatedEdges = edges.filter(e => e.source !== id && e.target !== id);
 
     // Remove items in this node
-    const updatedItems = items.filter(i => i.currentNodeId !== id && i.fromNodeId !== id);
+    const updatedItems = items.filter(i => i.currentNodeId !== id);
 
     set({
         nodes: updatedNodes,
@@ -729,34 +903,59 @@ export const useStore = create<SimulationState>((set, get) => ({
     });
   },
 
-  startSimulation: () => set({ isRunning: true }),
-  pauseSimulation: () => set({ isRunning: false }),
+  startSimulation: () => {
+    set((state) => {
+      const isFreshRun = state.tickCount === 0;
+      if (isFreshRun) {
+        resetSimulationRng(state.simulationSeed);
+      }
+
+      return {
+        isRunning: true,
+        runStartedAtMs:
+          state.targetDuration !== Infinity && state.runStartedAtMs === null ? Date.now() : state.runStartedAtMs,
+        lastRunSummary: isFreshRun ? null : state.lastRunSummary,
+        lastLoggedRunKey: isFreshRun ? null : state.lastLoggedRunKey,
+      };
+    });
+  },
+  pauseSimulation: () =>
+    set((state) => {
+      const shouldCaptureTargetSummary =
+        state.demandMode === 'target' &&
+        state.targetDuration !== Infinity &&
+        state.tickCount > 0 &&
+        state.tickCount < state.targetDuration;
+
+      return {
+        isRunning: false,
+        lastRunSummary: shouldCaptureTargetSummary
+          ? buildRunSummary(state, state.tickCount, 'target_run_stopped_early')
+          : state.lastRunSummary,
+      };
+    }),
   stepSimulation: () => {
-      // Manual step: pause first if running, then tick
-      set({ isRunning: false });
+      const state = get();
+      if (state.tickCount === 0) {
+        resetSimulationRng(state.simulationSeed);
+      }
+      set({
+        isRunning: false,
+        runStartedAtMs:
+          state.targetDuration !== Infinity && state.runStartedAtMs === null ? Date.now() : state.runStartedAtMs,
+        lastRunSummary: state.tickCount === 0 ? null : state.lastRunSummary,
+        lastLoggedRunKey: state.tickCount === 0 ? null : state.lastLoggedRunKey,
+      });
       get().tick();
   },
   
   resetSimulation: () => {
+    clearVisualTransferCleanupTimers();
     set((state) => ({
-      isRunning: false,
-      tickCount: 0,
-      cumulativeCompleted: 0,
-      throughput: 0,
-      cumulativeTransitTicks: 0,
-      displayTickCount: 0,
-      items: [],
-      history: [],
-      metricsEpoch: 0,
-      metricsEpochTick: 0,
-      demandArrivalsGenerated: 0,
-      demandArrivalsByNode: {},
-      demandAccumulatorByNode: {},
-      demandOpenTicksByNode: {},
-      periodCompleted: 0,
-      simulationProgress: 0, // Reset progress but preserve duration/speed settings
-      itemsByNode: new Map(),
-      itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+      ...(() => {
+        resetSimulationRng(state.simulationSeed);
+        return buildRunStateReset();
+      })(),
       nodes: state.nodes.map(n => {
         if (n.type === 'processNode' || n.type === 'startNode' || n.type === 'endNode') {
             return {
@@ -770,26 +969,12 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   clearCanvas: () => {
+    clearVisualTransferCleanupTimers();
+    resetSimulationRng(get().simulationSeed);
     set({ 
         nodes: [], 
         edges: [], 
-        items: [], 
-        history: [],
-        isRunning: false, 
-        tickCount: 0,
-        cumulativeCompleted: 0,
-        throughput: 0,
-        cumulativeTransitTicks: 0,
-        displayTickCount: 0,
-        metricsEpoch: 0,
-        metricsEpochTick: 0,
-        demandArrivalsGenerated: 0,
-        demandArrivalsByNode: {},
-        demandAccumulatorByNode: {},
-        demandOpenTicksByNode: {},
-        periodCompleted: 0,
-        itemsByNode: new Map(),
-        itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 }
+        ...buildRunStateReset()
     });
   },
 
@@ -800,33 +985,28 @@ export const useStore = create<SimulationState>((set, get) => ({
   addItem: (targetNodeId) => {
     const currentTick = get().tickCount;
     const metricsEpoch = get().metricsEpoch;
-    const newItem: ProcessItem = {
-      id: generateId(),
-      currentNodeId: targetNodeId,
-      fromNodeId: null,
-      status: ItemStatus.QUEUED,
-      progress: 0,
-      remainingTime: 0,
-      processingDuration: 0,
-      totalTime: 0,
-      nodeEnterTick: currentTick,
-      metricsEpoch,
-      timeActive: 0,
-      timeWaiting: 0,
-      timeTransit: 0,
-      nodeLeadTime: 0,
-      spawnTick: currentTick,
-      completionTick: null,
-      terminalNodeId: null,
-      transitProgress: 0
-    };
+    const newItem = createQueuedItem(targetNodeId, currentTick, metricsEpoch);
     set({ items: [...get().items, newItem] });
   },
 
-  clearItems: () => set({ items: [] }),
+  clearItems: () => {
+    clearVisualTransferCleanupTimers();
+    set({
+      items: [],
+      itemsByNode: new Map(),
+      itemCounts: createEmptyItemCounts(),
+      visualTransfers: [],
+    });
+  },
 
   // Persistence
   restoreLatestCloudSave: () => {
+    const lastCanvasId = getLastCanvasId();
+    if (lastCanvasId) {
+      void get().loadCanvasFromDb(lastCanvasId);
+      return;
+    }
+
     const sdk = getProcessBoxSdk();
     if (!sdk?.isEmbedded) return;
 
@@ -837,13 +1017,15 @@ export const useStore = create<SimulationState>((set, get) => ({
         const latest = latestEntry?.state_json;
         if (!latestEntry || !latest) return;
 
+        const workspaceId = resolveSnapshotWorkspaceId(latest, latestEntry?.id);
         const loaded = applyCloudFlowSnapshot(set, get, latest, {
-          canvasId: typeof latestEntry.id === 'string' ? latestEntry.id : null,
+          canvasId: workspaceId,
           canvasName: resolveCloudSaveCanvasName(latestEntry),
           successToast: null,
         });
 
         if (loaded) {
+          setLastCanvasId(workspaceId);
           void get().refreshCanvasList();
         }
       })
@@ -857,41 +1039,37 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   loadFlow: () => {
-    const sdk = getProcessBoxSdk();
-    if (!sdk?.isEmbedded) {
-      showToast('error', 'Cloud load requires Process Box embedding and sign-in.');
+    const lastCanvasId = getLastCanvasId();
+    if (lastCanvasId) {
+      void get().loadCanvasFromDb(lastCanvasId);
       return;
     }
 
-    void sdk
-      .listCloudSaves(1)
-      .then((payload) => {
-        const latestEntry = payload?.saves?.[0];
-        const latest = latestEntry?.state_json;
-        if (!latestEntry || !latest) {
-          showToast('warning', 'No cloud save found for this account.');
+    void get()
+      .refreshCanvasList()
+      .then(() => {
+        const latestCanvas = get().savedCanvasList[0];
+        if (!latestCanvas) {
+          showToast('warning', 'No saved process found yet.');
           return;
         }
-
-        const loaded = applyCloudFlowSnapshot(set, get, latest, {
-          canvasId: typeof latestEntry.id === 'string' ? latestEntry.id : null,
-          canvasName: resolveCloudSaveCanvasName(latestEntry),
-          successToast: 'Loaded flow from cloud save.',
-        });
-        if (!loaded) {
-          showToast('warning', 'No valid cloud save found for this account.');
-          return;
-        }
-        void get().refreshCanvasList();
+        return get().loadCanvasFromDb(latestCanvas.id);
       })
       .catch(() => {
-        showToast('error', 'Cloud load failed. Please check sign-in and try again.');
+        showToast('error', 'Failed to load saved process.');
       });
   },
 
   exportJson: () => {
-      const { nodes, edges, itemConfig, defaultHeaderColor } = get();
-      const dataStr = JSON.stringify({ nodes, edges, itemConfig, defaultHeaderColor }, null, 2);
+      const state = get();
+      const dataStr = JSON.stringify(
+        createFlowSnapshot(state, {
+          workspaceId: state.currentCanvasId,
+          canvasName: state.currentCanvasName,
+        }),
+        null,
+        2
+      );
       const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
       const exportFileDefaultName = 'process_flow.json';
       const linkElement = document.createElement('a');
@@ -904,31 +1082,36 @@ export const useStore = create<SimulationState>((set, get) => ({
       try {
         const flow = JSON.parse(fileContent);
         if (flow.nodes && flow.edges) {
+            clearVisualTransferCleanupTimers();
+            const durationPreset = flow.durationPreset || get().durationPreset;
+            const durationConfig = DURATION_PRESETS[durationPreset] || DURATION_PRESETS.unlimited;
+            const speedPreset = flow.speedPreset || get().speedPreset;
+            const speedConfig = SPEED_PRESETS.find((s) => s.key === speedPreset) || SPEED_PRESETS[1];
+            const demandUnit = (flow.demandUnit as DemandUnit) || 'week';
+            const simulationSeed = normalizeSeed(flow.simulationSeed, get().simulationSeed);
+            resetSimulationRng(simulationSeed);
             set({
                 nodes: flow.nodes,
                 edges: flow.edges,
                 itemConfig: flow.itemConfig || get().itemConfig,
                 defaultHeaderColor: flow.defaultHeaderColor || get().defaultHeaderColor,
-                items: [],
-                isRunning: false,
-                tickCount: 0,
-                displayTickCount: 0,
-                cumulativeTransitTicks: 0,
-                cumulativeCompleted: 0,
-                throughput: 0,
-                history: [],
-                metricsEpoch: 0,
-                metricsEpochTick: 0,
-                demandMode: 'auto',
-                demandUnit: 'week',
-                demandTotalTicks: DEMAND_UNIT_TICKS.week,
-                demandArrivalsGenerated: 0,
-                demandArrivalsByNode: {},
-                demandAccumulatorByNode: {},
-                demandOpenTicksByNode: {},
-                periodCompleted: 0,
-                itemsByNode: new Map(),
-                itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 }
+                durationPreset,
+                targetDuration: durationConfig.totalTicks,
+                speedPreset,
+                ticksPerSecond: speedConfig.ticksPerSecond,
+                autoStopEnabled:
+                  flow.autoStopEnabled !== undefined ? Boolean(flow.autoStopEnabled) : get().autoStopEnabled,
+                metricsWindowCompletions:
+                  Number.isFinite(flow.metricsWindowCompletions)
+                    ? flow.metricsWindowCompletions
+                    : get().metricsWindowCompletions,
+                demandMode: (flow.demandMode as DemandMode) || 'auto',
+                demandUnit,
+                demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
+                simulationSeed,
+                currentCanvasId: null,
+                currentCanvasName: normalizeCanvasName(flow.canvasName || 'Imported Process'),
+                ...buildRunStateReset()
             });
             showToast('success', 'Flow imported successfully');
         } else {
@@ -942,29 +1125,17 @@ export const useStore = create<SimulationState>((set, get) => ({
   loadScenario: (scenarioKey) => {
       const scenario = SCENARIOS[scenarioKey as keyof typeof SCENARIOS];
       if (scenario) {
+          clearVisualTransferCleanupTimers();
+          resetSimulationRng(get().simulationSeed);
           set({ 
               nodes: JSON.parse(JSON.stringify(scenario.nodes)), // Deep copy
               edges: JSON.parse(JSON.stringify(scenario.edges)),
-              items: [],
-              isRunning: false,
-              tickCount: 0,
-              displayTickCount: 0,
-              cumulativeTransitTicks: 0,
-              cumulativeCompleted: 0,
-              throughput: 0,
-              history: [],
               demandMode: 'auto',
               demandUnit: 'week',
               demandTotalTicks: DEMAND_UNIT_TICKS.week,
-              demandArrivalsGenerated: 0,
-              demandArrivalsByNode: {},
-              demandAccumulatorByNode: {},
-              demandOpenTicksByNode: {},
-              periodCompleted: 0,
-              metricsEpoch: 0,
-              metricsEpochTick: 0,
-              itemsByNode: new Map(),
-              itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 }
+              currentCanvasId: null,
+              currentCanvasName: SCENARIO_NAMES[scenarioKey] || 'Untitled Canvas',
+              ...buildRunStateReset()
           });
       }
   },
@@ -974,21 +1145,47 @@ export const useStore = create<SimulationState>((set, get) => ({
   refreshCanvasList: async () => {
     const sdk = getProcessBoxSdk();
     if (!sdk?.isEmbedded) {
-      set({ savedCanvasList: [] });
+      try {
+        const savedCanvasList = await getAllCanvases();
+        set({ savedCanvasList });
+      } catch {
+        set({ savedCanvasList: [] });
+      }
       return;
     }
 
     try {
       const payload = await sdk.listCloudSaves(50);
       const saves = Array.isArray(payload?.saves) ? payload.saves : [];
+      const latestByWorkspace = new Map<string, { entry: any; updatedAt: number }>();
 
-      const savedCanvasList = saves
-        .filter((entry) => entry && entry.state_json && Array.isArray(entry.state_json.nodes) && Array.isArray(entry.state_json.edges))
-        .map((entry) => ({
-          id: String(entry.id),
-          name: resolveCloudSaveCanvasName(entry),
-          updatedAt: parseCloudSaveUpdatedAt(entry),
-        }));
+      for (const entry of saves) {
+        const snapshot = entry?.state_json;
+        if (!snapshot || !Array.isArray(snapshot.nodes) || !Array.isArray(snapshot.edges)) continue;
+        const workspaceId = resolveSnapshotWorkspaceId(snapshot, entry?.id);
+        if (!workspaceId) continue;
+        const updatedAt = parseCloudSaveUpdatedAt(entry);
+        const existing = latestByWorkspace.get(workspaceId);
+        if (!existing || updatedAt >= existing.updatedAt) {
+          latestByWorkspace.set(workspaceId, { entry, updatedAt });
+        }
+      }
+
+      const savedCanvasList = Array.from(latestByWorkspace.entries())
+        .map(([workspaceId, value]) => {
+          const snapshot = value.entry?.state_json;
+          return buildCanvasMetadataFromSnapshot(
+            'cloud',
+            workspaceId,
+            value.updatedAt,
+            {
+              ...snapshot,
+              canvasName: resolveCloudSaveCanvasName(value.entry),
+            },
+            typeof value.entry?.id === 'string' ? value.entry.id : null,
+          );
+        })
+        .sort((left, right) => right.updatedAt - left.updatedAt);
 
       set({ savedCanvasList });
     } catch {
@@ -998,40 +1195,36 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   saveCanvasToDb: async () => {
     const sdk = getProcessBoxSdk();
+    const state = get();
+    const workspaceId = ensureWorkspaceId(state.currentCanvasId);
+    const canvasName = normalizeCanvasName(state.currentCanvasName);
+    const flow = createFlowSnapshot(state, {
+      workspaceId,
+      canvasName,
+    });
+
     if (!sdk?.isEmbedded) {
-      showToast('error', 'Cloud saves require Process Box embedding and sign-in.');
+      try {
+        const existing = await getCanvas(workspaceId);
+        await saveCanvas({
+          id: workspaceId,
+          name: canvasName,
+          createdAt: existing?.createdAt || Date.now(),
+          updatedAt: Date.now(),
+          data: flow,
+        });
+        set({
+          currentCanvasId: workspaceId,
+          currentCanvasName: canvasName,
+        });
+        setLastCanvasId(workspaceId);
+        await get().refreshCanvasList();
+        showToast('success', 'Flow saved locally');
+      } catch {
+        showToast('error', 'Local save failed in this browser.');
+      }
       return;
     }
-
-    const state = get();
-    const {
-      nodes,
-      edges,
-      itemConfig,
-      defaultHeaderColor,
-      durationPreset,
-      speedPreset,
-      autoStopEnabled,
-      countTransitInClock,
-      metricsWindowCompletions,
-      demandMode,
-      demandUnit,
-    } = state;
-
-    const flow = {
-      nodes,
-      edges,
-      itemConfig,
-      defaultHeaderColor,
-      durationPreset,
-      speedPreset,
-      autoStopEnabled,
-      countTransitInClock,
-      metricsWindowCompletions,
-      demandMode,
-      demandUnit,
-      canvasName: normalizeCanvasName(state.currentCanvasName),
-    };
 
     try {
       const payload = await sdk.createCloudSave({
@@ -1040,69 +1233,82 @@ export const useStore = create<SimulationState>((set, get) => ({
         tier: 'registered',
       });
 
-      const savedId = typeof payload?.saved?.id === 'string' ? payload.saved.id : null;
       set({
-        currentCanvasId: savedId,
+        currentCanvasId: workspaceId,
         currentCanvasName: flow.canvasName,
       });
 
+      setLastCanvasId(workspaceId);
       await get().refreshCanvasList();
       showToast('success', 'Flow saved to cloud');
-
-      void sdk.logScoreRun({
-        score: nodes.length,
-        outcome: 'design_saved',
-        metadata: {
-          nodeCount: nodes.length,
-          edgeCount: edges.length,
-          durationPreset,
-          speedPreset,
-        },
-      });
-
-      void sdk.trackAppCompleted({
-        action: 'save_flow',
-        nodeCount: nodes.length,
-        edgeCount: edges.length,
-      });
     } catch {
       showToast('error', 'Cloud save failed. Please check sign-in and try again.');
     }
   },
 
   loadCanvasFromDb: async (id: string) => {
-    const saveId = typeof id === 'string' ? id.trim() : '';
-    if (!saveId) {
-      showToast('error', 'Invalid cloud save id.');
+    const workspaceId = typeof id === 'string' ? id.trim() : '';
+    if (!workspaceId) {
+      showToast('error', 'Invalid process id.');
       return;
     }
 
     const sdk = getProcessBoxSdk();
     if (!sdk?.isEmbedded) {
-      showToast('error', 'Cloud load requires Process Box embedding and sign-in.');
+      try {
+        const canvas = await getCanvas(workspaceId);
+        if (!canvas?.data) {
+          showToast('warning', 'Saved process not found.');
+          return;
+        }
+
+        const loaded = applyCloudFlowSnapshot(set, get, canvas.data, {
+          canvasId: workspaceId,
+          canvasName: canvas.name,
+          successToast: 'Loaded saved process.',
+        });
+        if (!loaded) {
+          showToast('warning', 'Saved process is invalid for this app version.');
+          return;
+        }
+        setLastCanvasId(workspaceId);
+        await get().refreshCanvasList();
+      } catch {
+        showToast('error', 'Local load failed in this browser.');
+      }
       return;
     }
 
     try {
       const payload = await sdk.listCloudSaves(50);
       const saves = Array.isArray(payload?.saves) ? payload.saves : [];
-      const target = saves.find((entry) => String(entry?.id) === saveId);
+      const matchingEntries = saves
+        .filter((entry) => {
+          const snapshot = entry?.state_json;
+          if (!snapshot) return false;
+          const snapshotWorkspaceId = resolveSnapshotWorkspaceId(snapshot, entry?.id);
+          return snapshotWorkspaceId === workspaceId || String(entry?.id) === workspaceId;
+        })
+        .sort((left, right) => parseCloudSaveUpdatedAt(right) - parseCloudSaveUpdatedAt(left));
+      const target = matchingEntries[0];
 
       if (!target?.state_json) {
-        showToast('warning', 'Cloud save not found.');
+        showToast('warning', 'Saved process not found.');
         return;
       }
 
+      const resolvedWorkspaceId = resolveSnapshotWorkspaceId(target.state_json, target?.id) || workspaceId;
       const loaded = applyCloudFlowSnapshot(set, get, target.state_json, {
-        canvasId: saveId,
+        canvasId: resolvedWorkspaceId,
         canvasName: resolveCloudSaveCanvasName(target),
-        successToast: 'Loaded flow from cloud save.',
+        successToast: 'Loaded saved process.',
       });
       if (!loaded) {
-        showToast('warning', 'Cloud save is invalid for this app version.');
+        showToast('warning', 'Saved process is invalid for this app version.');
         return;
       }
 
+      setLastCanvasId(resolvedWorkspaceId);
       await get().refreshCanvasList();
     } catch {
       showToast('error', 'Cloud load failed. Please check sign-in and try again.');
@@ -1110,65 +1316,96 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   newCanvas: () => {
+    resetSimulationRng(get().simulationSeed);
     set({
       nodes: [],
       edges: [],
-      items: [],
-      isRunning: false,
-      tickCount: 0,
-      displayTickCount: 0,
-      cumulativeTransitTicks: 0,
-      cumulativeCompleted: 0,
-      throughput: 0,
-      simulationProgress: 0,
-      history: [],
-      metricsEpoch: 0,
-      metricsEpochTick: 0,
-      demandArrivalsGenerated: 0,
-      demandArrivalsByNode: {},
-      demandAccumulatorByNode: {},
-      demandOpenTicksByNode: {},
-      periodCompleted: 0,
-      itemsByNode: new Map(),
-      itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, transit: 0, stuck: 0 },
+      ...buildRunStateReset(),
       currentCanvasId: null,
       currentCanvasName: 'Untitled Canvas',
     });
   },
 
   renameCurrentCanvas: async (name: string) => {
-    set({ currentCanvasName: normalizeCanvasName(name) });
+    const nextName = normalizeCanvasName(name);
+    const currentCanvasId = get().currentCanvasId;
+    set({ currentCanvasName: nextName });
+    if (!currentCanvasId) return;
+
+    const sdk = getProcessBoxSdk();
+    if (sdk?.isEmbedded) return;
+
+    try {
+      await renameCanvas(currentCanvasId, nextName);
+      await get().refreshCanvasList();
+    } catch {
+      // The in-memory rename already succeeded; local persistence can catch up on next save.
+    }
   },
 
   deleteCanvasFromDb: async (id: string) => {
-    const saveId = typeof id === 'string' ? id.trim() : '';
-    if (!saveId) {
-      showToast('error', 'Invalid cloud save id.');
+    const workspaceId = typeof id === 'string' ? id.trim() : '';
+    if (!workspaceId) {
+      showToast('error', 'Invalid process id.');
       return;
     }
 
     const sdk = getProcessBoxSdk();
     if (!sdk?.isEmbedded) {
-      showToast('error', 'Cloud delete requires Process Box embedding and sign-in.');
+      try {
+        await deleteCanvas(workspaceId);
+        if (get().currentCanvasId === workspaceId) {
+          set({
+            currentCanvasId: null,
+            currentCanvasName: 'Untitled Canvas',
+          });
+        }
+        if (getLastCanvasId() === workspaceId) {
+          setLastCanvasId(null);
+        }
+        await get().refreshCanvasList();
+        showToast('success', 'Saved process deleted.');
+      } catch {
+        showToast('error', 'Local delete failed in this browser.');
+      }
       return;
     }
 
     try {
-      await sdk.deleteCloudSave(saveId);
-      if (get().currentCanvasId === saveId) {
+      const payload = await sdk.listCloudSaves(50);
+      const saves = Array.isArray(payload?.saves) ? payload.saves : [];
+      const matchingEntries = saves.filter((entry) => {
+        const snapshot = entry?.state_json;
+        if (!snapshot) return false;
+        const snapshotWorkspaceId = resolveSnapshotWorkspaceId(snapshot, entry?.id);
+        return snapshotWorkspaceId === workspaceId || String(entry?.id) === workspaceId;
+      });
+
+      await Promise.all(
+        matchingEntries.map((entry) => sdk.deleteCloudSave(String(entry.id))),
+      );
+
+      if (get().currentCanvasId === workspaceId) {
         set({
           currentCanvasId: null,
           currentCanvasName: 'Untitled Canvas',
         });
       }
+      if (getLastCanvasId() === workspaceId) {
+        setLastCanvasId(null);
+      }
       await get().refreshCanvasList();
-      showToast('success', 'Cloud save deleted.');
+      showToast('success', 'Saved process deleted.');
     } catch {
       showToast('error', 'Cloud delete failed. Please check sign-in and try again.');
     }
   },
 
   tick: () => {
+    let pendingRunLog:
+      | { score: number; durationMs: number; outcome: string; metadata: Record<string, unknown> }
+      | null = null;
+    let pendingVisualTransfers: VisualTransfer[] = [];
     set((state) => {
       const {
         nodes,
@@ -1180,8 +1417,6 @@ export const useStore = create<SimulationState>((set, get) => ({
         targetDuration,
         autoStopEnabled,
         cumulativeCompleted,
-        cumulativeTransitTicks,
-        countTransitInClock,
         metricsEpoch,
         metricsWindowCompletions,
         demandMode,
@@ -1191,8 +1426,24 @@ export const useStore = create<SimulationState>((set, get) => ({
         demandArrivalsByNode,
         demandAccumulatorByNode,
         demandOpenTicksByNode,
-        periodCompleted
+        periodCompleted,
+        visualTransfers,
+        runStartedAtMs,
+        simulationSeed,
+        ticksPerSecond,
+        durationPreset,
+        currentCanvasId,
+        currentCanvasName,
+        lastRunSummary,
+        lastLoggedRunKey
       } = state;
+
+      if (tickCount === 0 && history.length === 0) {
+        resetSimulationRng(simulationSeed);
+      }
+
+      const effectiveRunStartedAtMs =
+        runStartedAtMs === null && state.isRunning && targetDuration !== Infinity ? Date.now() : runStartedAtMs;
 
       // AUTO-STOP CHECK: Stop simulation when target duration reached
       if (autoStopEnabled && targetDuration !== Infinity && tickCount >= targetDuration) {
@@ -1212,28 +1463,6 @@ export const useStore = create<SimulationState>((set, get) => ({
         const pData = node.data as ProcessNodeData;
         workingStatus.set(node.id, isWorkingTick(tickCount, pData.workingHours));
       }
-
-      // Build edge lookup by source+target for transit time overrides
-      const edgeByPair = new Map<string, Edge>();
-      for (const edge of edges) {
-        edgeByPair.set(`${edge.source}->${edge.target}`, edge);
-      }
-
-      // Helper: Calculate transit duration - uses edge override if set, otherwise distance-based (5-30 ticks)
-      const getTransitDuration = (sourceId: string, targetId: string): number => {
-        const edge = edgeByPair.get(`${sourceId}->${targetId}`);
-        const customTransitTime = (edge as any)?.data?.transitTime;
-
-        const sourceNode = nodeMap.get(sourceId);
-        const targetNode = nodeMap.get(targetId);
-        if (!sourceNode || !targetNode) return computeTransitDuration(10, customTransitTime); // tiny fallback distance
-
-        const dx = Math.abs(targetNode.position.x - sourceNode.position.x);
-        const dy = Math.abs(targetNode.position.y - sourceNode.position.y);
-        const distance = dx + dy;
-
-        return computeTransitDuration(distance, customTransitTime);
-      };
 
       // Build edge lookup by source for O(1) access
       const edgesBySource = new Map<string, Edge[]>();
@@ -1290,26 +1519,7 @@ export const useStore = create<SimulationState>((set, get) => ({
 
             if (spawnCount > 0) {
               for (let i = 0; i < spawnCount; i++) {
-                injectedItems.push({
-                  id: generateId(),
-                  currentNodeId: node.id,
-                  fromNodeId: null,
-                  status: ItemStatus.QUEUED,
-                  progress: 0,
-                  remainingTime: 0,
-                  processingDuration: 0,
-                  totalTime: 0,
-                  nodeEnterTick: tickCount,
-                  metricsEpoch,
-                  timeActive: 0,
-                  timeWaiting: 0,
-                  timeTransit: 0,
-                  nodeLeadTime: 0,
-                  spawnTick: tickCount,
-                  completionTick: null,
-                  terminalNodeId: null,
-                  transitProgress: 0
-                });
+                injectedItems.push(createQueuedItem(node.id, tickCount, metricsEpoch));
               }
               nextDemandArrivalsByNode[node.id] = generatedSoFar + spawnCount;
               nextDemandArrivalsGenerated += spawnCount;
@@ -1326,26 +1536,7 @@ export const useStore = create<SimulationState>((set, get) => ({
             if (!isWorking) continue;
             if (tickCount % config.interval === 0) {
               for (let i = 0; i < config.batchSize; i++) {
-                injectedItems.push({
-                  id: generateId(),
-                  currentNodeId: node.id,
-                  fromNodeId: null,
-                  status: ItemStatus.QUEUED,
-                  progress: 0,
-                  remainingTime: 0,
-                  processingDuration: 0,
-                  totalTime: 0,
-                  nodeEnterTick: tickCount,
-                  metricsEpoch,
-                  timeActive: 0,
-                  timeWaiting: 0,
-                  timeTransit: 0,
-                  nodeLeadTime: 0,
-                  spawnTick: tickCount,
-                  completionTick: null,
-                  terminalNodeId: null,
-                  transitProgress: 0
-                });
+                injectedItems.push(createQueuedItem(node.id, tickCount, metricsEpoch));
               }
             }
           }
@@ -1360,13 +1551,22 @@ export const useStore = create<SimulationState>((set, get) => ({
       const processingCounts = new Map<string, number>();
       let newlyCompleted = 0;
       let newlyCompletedInEpoch = 0;
-      let hasTransitThisStep = false;
-      let hasNonTransitActiveItem = false;
 
       const registerCompletion = (item: ProcessItem) => {
         if (item.terminalNodeId === null) return;
         newlyCompleted++;
         if (item.metricsEpoch === metricsEpoch) newlyCompletedInEpoch++;
+      };
+
+      const enqueueVisualTransfer = (sourceNodeId: string, targetNodeId: string) => {
+        const transfer: VisualTransfer = {
+          id: generateId(),
+          sourceNodeId,
+          targetNodeId,
+          startedAtMs: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+          durationMs: getVisualTransferDurationMs(ticksPerSecond),
+        };
+        pendingVisualTransfers.push(transfer);
       };
 
       // Initialize processing counts
@@ -1387,9 +1587,9 @@ export const useStore = create<SimulationState>((set, get) => ({
         const totalWeight = choices.reduce((sum, c) => sum + c.weight, 0);
         // Guard against all-zero weights: fall back to uniform distribution
         if (totalWeight <= 0) {
-          return outgoing[Math.floor(Math.random() * outgoing.length)].target;
+          return outgoing[Math.floor(nextSimulationRandom() * outgoing.length)].target;
         }
-        let random = Math.random() * totalWeight;
+        let random = nextSimulationRandom() * totalWeight;
         for (const choice of choices) {
           if (random < choice.weight) return choice.targetId;
           random -= choice.weight;
@@ -1400,7 +1600,6 @@ export const useStore = create<SimulationState>((set, get) => ({
       // Process items - mutate in place for performance
       for (const item of allItems) {
         if (item.status === ItemStatus.PROCESSING && item.currentNodeId) {
-          hasNonTransitActiveItem = true;
           const node = nodeMap.get(item.currentNodeId);
           if (node && node.type !== 'annotationNode') {
             const isWorking = workingStatus.get(node.id) ?? true;
@@ -1417,7 +1616,7 @@ export const useStore = create<SimulationState>((set, get) => ({
               : 100;
 
             if (item.remainingTime <= 0) {
-              const passed = Math.random() <= pData.quality;
+              const passed = nextSimulationRandom() <= pData.quality;
 
               // Track stats update
               const stats = nodesUpdates.get(node.id) || { processed: 0, failed: 0 };
@@ -1426,20 +1625,22 @@ export const useStore = create<SimulationState>((set, get) => ({
               nodesUpdates.set(node.id, stats);
 
               if (passed) {
+                const sourceNodeId = node.id;
                 const nextNodeId = getNextNode(node.id, pData.routingWeights);
-                  if (nextNodeId) {
-                    const transitDuration = getTransitDuration(node.id, nextNodeId);
-                  item.status = ItemStatus.TRANSIT;
-                  item.fromNodeId = node.id;
+                if (nextNodeId) {
+                  enqueueVisualTransfer(sourceNodeId, nextNodeId);
+                  item.status = ItemStatus.QUEUED;
                   item.currentNodeId = nextNodeId;
-                  item.remainingTime = transitDuration;
-                  item.processingDuration = transitDuration; // Store for progress calculation
-                  item.transitProgress = 0;
+                  item.remainingTime = 0;
+                  item.processingDuration = 0;
+                  item.progress = 0;
+                  item.nodeEnterTick = tickCount;
+                  item.nodeLeadTime = 0;
                   item.terminalNodeId = null;
-                  hasTransitThisStep = true;
                 } else {
-                    item.status = ItemStatus.COMPLETED;
-                    item.currentNodeId = null;
+                  item.status = ItemStatus.COMPLETED;
+                  item.currentNodeId = null;
+                  item.progress = 100;
                   item.completionTick = tickCount;
                   item.terminalNodeId = node.type === 'endNode' ? node.id : null;
                   registerCompletion(item);
@@ -1452,25 +1653,6 @@ export const useStore = create<SimulationState>((set, get) => ({
               }
             }
           }
-        } else if (item.status === ItemStatus.TRANSIT) {
-          item.remainingTime--;
-          item.timeTransit++;
-          item.totalTime++;
-          hasTransitThisStep = true;
-          // Use stored processingDuration for accurate progress (distance-based transit)
-          const transitDuration = item.processingDuration || 10;
-          item.transitProgress = Math.min(1, 1 - (item.remainingTime / transitDuration));
-
-          if (item.remainingTime <= 0) {
-            item.status = ItemStatus.QUEUED;
-            item.fromNodeId = null;
-            item.progress = 0;
-            item.transitProgress = 0;
-            item.nodeEnterTick = tickCount;
-            item.nodeLeadTime = 0;
-          }
-        } else if (item.status === ItemStatus.QUEUED) {
-          hasNonTransitActiveItem = true;
         }
         // Note: already-completed items are pre-counted above, not here
       }
@@ -1497,22 +1679,23 @@ export const useStore = create<SimulationState>((set, get) => ({
 
               if (pData.processingTime === 0) {
                 // Instant processing - still apply quality check
-                const passed = Math.random() <= pData.quality;
+                const passed = nextSimulationRandom() <= pData.quality;
                 const stats = nodesUpdates.get(node.id) || { processed: 0, failed: 0 };
 
                 if (passed) {
                   // Check for next node to route to
+                  const sourceNodeId = node.id;
                   const nextNodeId = getNextNode(node.id, pData.routingWeights);
                   if (nextNodeId) {
-                    const transitDuration = getTransitDuration(node.id, nextNodeId);
-                    item.status = ItemStatus.TRANSIT;
-                    item.fromNodeId = node.id;
+                    enqueueVisualTransfer(sourceNodeId, nextNodeId);
+                    item.status = ItemStatus.QUEUED;
                     item.currentNodeId = nextNodeId;
-                    item.remainingTime = transitDuration;
-                    item.processingDuration = transitDuration;
-                    item.transitProgress = 0;
+                    item.remainingTime = 0;
+                    item.processingDuration = 0;
+                    item.progress = 0;
+                    item.nodeEnterTick = tickCount;
+                    item.nodeLeadTime = 0;
                     item.terminalNodeId = null;
-                    hasTransitThisStep = true;
                   } else {
                     item.status = ItemStatus.COMPLETED;
                     item.currentNodeId = null;
@@ -1532,7 +1715,11 @@ export const useStore = create<SimulationState>((set, get) => ({
                 }
                 nodesUpdates.set(node.id, stats);
               } else {
-                const actualTime = applyVariability(pData.processingTime, pData.variability || 0);
+                const actualTime = applyVariability(
+                  pData.processingTime,
+                  pData.variability || 0,
+                  nextSimulationRandom
+                );
                 item.status = ItemStatus.PROCESSING;
                 item.remainingTime = actualTime;
                 item.processingDuration = actualTime;
@@ -1640,28 +1827,68 @@ export const useStore = create<SimulationState>((set, get) => ({
 
       // Compute derived state for UI
       const derived = computeDerivedState(prunedItems);
+      const nextVisualTransfers =
+        pendingVisualTransfers.length > 0
+          ? [...visualTransfers, ...pendingVisualTransfers].slice(-MAX_VISUAL_TRANSFERS)
+          : visualTransfers;
 
       // Calculate progress percentage
       const newTickCount = tickCount + 1;
-      // Only count a tick as "transit-only" when ALL active items are in transit
-      // (no items are being processed or waiting in queues). This prevents the
-      // display clock from freezing when items are continuously flowing.
-      const isTransitOnlyTick = hasTransitThisStep && !hasNonTransitActiveItem;
-      const newCumulativeTransitTicks = cumulativeTransitTicks + (isTransitOnlyTick ? 1 : 0);
-      const displayTickCount = computeDisplayTickCount(newTickCount, newCumulativeTransitTicks, { countTransitInClock });
-      const simulationProgress = targetDuration === Infinity
+      const displayTickCount = newTickCount;
+      let simulationProgress = targetDuration === Infinity
         ? 0
         : Math.min(100, (newTickCount / targetDuration) * 100);
+      const shouldAutoStop = autoStopEnabled && targetDuration !== Infinity && newTickCount >= targetDuration;
+
+      let nextLastRunSummary = lastRunSummary;
+      let nextLastLoggedRunKey = lastLoggedRunKey;
+      if (shouldAutoStop) {
+        simulationProgress = 100;
+
+        if (demandMode === 'target') {
+          const summary = buildRunSummary(
+            {
+              items: prunedItems,
+              itemCounts: derived.itemCounts,
+              metricsWindowCompletions,
+              metricsEpoch,
+              demandArrivalsGenerated: nextDemandArrivalsGenerated,
+              periodCompleted: periodCompletedNext,
+              simulationSeed,
+              durationPreset,
+              demandMode,
+              runStartedAtMs: effectiveRunStartedAtMs,
+              currentCanvasId,
+              currentCanvasName
+            },
+            newTickCount,
+            'target_run_completed'
+          );
+          const runKey = buildRunSummaryKey(summary);
+          nextLastRunSummary = summary;
+
+          if (runKey !== lastLoggedRunKey) {
+            pendingRunLog = {
+              score: summary.score,
+              durationMs: summary.wallClockDurationMs,
+              outcome: summary.outcome,
+              metadata: summary as unknown as Record<string, unknown>
+            };
+            nextLastLoggedRunKey = runKey;
+          }
+        }
+      }
 
       return {
         items: prunedItems,
         nodes: nextNodes,
+        isRunning: shouldAutoStop ? false : state.isRunning,
         tickCount: newTickCount,
         displayTickCount,
-        cumulativeTransitTicks: newCumulativeTransitTicks,
         history: nextHistory,
         itemsByNode: derived.itemsByNode,
         itemCounts: derived.itemCounts,
+        visualTransfers: nextVisualTransfers,
         simulationProgress,
         cumulativeCompleted: cumulativeCompletedNext,
         periodCompleted: periodCompletedNext,
@@ -1669,8 +1896,26 @@ export const useStore = create<SimulationState>((set, get) => ({
         demandArrivalsGenerated: nextDemandArrivalsGenerated,
         demandArrivalsByNode: nextDemandArrivalsByNode,
         demandAccumulatorByNode: nextDemandAccumulatorByNode,
-        demandOpenTicksByNode: nextDemandOpenTicksByNode
+        demandOpenTicksByNode: nextDemandOpenTicksByNode,
+        runStartedAtMs: effectiveRunStartedAtMs,
+        lastRunSummary: nextLastRunSummary,
+        lastLoggedRunKey: nextLastLoggedRunKey
       };
     });
+
+    if (pendingRunLog) {
+      const sdk = getProcessBoxSdk();
+      if (sdk?.isEmbedded) {
+        void sdk.logScoreRun(pendingRunLog).catch(() => {
+          showToast('warning', 'Process Box run history could not be recorded.');
+        });
+      }
+    }
+
+    if (pendingVisualTransfers.length > 0) {
+      for (const transfer of pendingVisualTransfers) {
+        scheduleVisualTransferCleanup(transfer.id, transfer.durationMs, set);
+      }
+    }
   }
 }));

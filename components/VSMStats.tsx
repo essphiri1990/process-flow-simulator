@@ -22,7 +22,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
     }),
     [items, metricsWindowCompletions, metricsEpoch]
   );
-  const { avgLeadTime, avgVAT, pce, sampleSize } = metrics;
+  const { avgLeadWorking, avgLeadElapsed, avgClosed, avgVAT, pce, sampleSize } = metrics;
   const lowSample = sampleSize < 5;
   const windowLabel = formatCompletionWindowLabel(metricsWindowCompletions);
   const metricsTooltip = lowSample
@@ -31,7 +31,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
 
   // Use pre-computed WIP count
   const wip = itemCounts.wip;
-  const wipBreakdown = `Q ${itemCounts.queued} · P ${itemCounts.processing} · T ${itemCounts.transit} · S ${itemCounts.stuck}`;
+  const wipBreakdown = `Q ${itemCounts.queued} · P ${itemCounts.processing} · S ${itemCounts.stuck}`;
 
   // Format time as human-readable mixed units (e.g. "2h 15m", "1d 3h")
   const formatTime = (ticks: number): string => {
@@ -90,21 +90,33 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
              {/* Tooltip for PCE Breakdown */}
              <div className="absolute bottom-full mb-2 left-0 w-full bg-slate-800 text-white text-[10px] p-2 rounded opacity-0 group-hover/pce:opacity-100 transition-opacity pointer-events-none z-50">
                  <div className="flex justify-between"><span>Value Added:</span> <span>{formatTime(avgVAT)}</span></div>
-                 <div className="flex justify-between"><span>Waiting:</span> <span>{formatTime(avgLeadTime - avgVAT)}</span></div>
+                 <div className="flex justify-between"><span>Waiting:</span> <span>{formatTime(Math.max(0, avgLeadWorking - avgVAT))}</span></div>
+                 <div className="flex justify-between"><span>Closed:</span> <span>{formatTime(avgClosed)}</span></div>
              </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 pt-2">
-             {/* Lead Time */}
              <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
                 <div className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
-                   <Clock size={10} /> Lead Time
+                   <Clock size={10} /> Lead (Working)
                 </div>
                 <div
                   className={`text-lg font-mono font-bold whitespace-nowrap ${lowSample ? 'text-slate-400' : 'text-slate-700'}`}
                   title={metricsTooltip}
                 >
-                   {formatTime(avgLeadTime)}
+                   {formatTime(avgLeadWorking)}
+                </div>
+             </div>
+
+             <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                <div className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                   <Clock size={10} /> Lead (Elapsed)
+                </div>
+                <div
+                  className={`text-lg font-mono font-bold whitespace-nowrap ${lowSample ? 'text-slate-400' : 'text-slate-700'}`}
+                  title={metricsTooltip}
+                >
+                   {formatTime(avgLeadElapsed)}
                 </div>
              </div>
 
@@ -116,15 +128,28 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
                 <div className="text-lg font-mono font-bold text-slate-700">
                    {wip}
                 </div>
-                <div className="text-[10px] text-slate-400 mt-1" title="Queued · Processing · Transit · Stuck">
+                <div className="text-[10px] text-slate-400 mt-1" title="Queued · Processing · Stuck">
                   {wipBreakdown}
                 </div>
+             </div>
+
+             <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                <div className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                   <Activity size={10} /> Thru (Working)
+                </div>
+                <div className={`text-lg font-mono font-bold ${lowSample ? 'text-slate-400' : 'text-slate-700'}`}>
+                  {metrics.throughputWorkingPerHour.toFixed(1)}/h
+                </div>
+                <div className="text-[10px] text-slate-400">Elapsed {metrics.throughputElapsedPerHour.toFixed(1)}/h</div>
              </div>
           </div>
 
           <div className="text-xs text-center text-slate-400 pt-1 border-t border-slate-100 mt-2 flex items-center justify-center gap-2">
              <Activity size={12} /> Throughput: <strong className={lowSample ? 'text-slate-400' : 'text-slate-600'}>{throughput.toFixed(1)}</strong> items/hr
              <span className="text-slate-300">|</span> n={sampleSize} <span className="text-slate-300">|</span> {windowLabel}
+          </div>
+          <div className="text-[10px] text-center text-slate-400">
+            Run Time = observation window. Working = queue + processing. Elapsed = spawn to completion.
           </div>
        </div>
     </div>

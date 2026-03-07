@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useStore } from '../store';
-import { X, User, Box, FileText, Circle, Square, Clock, Palette, ChevronDown, Activity } from 'lucide-react';
+import { X, User, Box, FileText, Circle, Square, Clock, Palette, ChevronDown, Activity, RefreshCw } from 'lucide-react';
 import { NODE_HEADER_COLORS, DEMAND_UNIT_LABELS, DemandUnit } from '../types';
 
 interface SettingsModalProps {
@@ -17,6 +17,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const setDemandMode = useStore((state) => state.setDemandMode);
   const setDemandUnit = useStore((state) => state.setDemandUnit);
   const demandArrivalsGenerated = useStore((state) => state.demandArrivalsGenerated);
+  const simulationSeed = useStore((state) => state.simulationSeed);
+  const setSimulationSeed = useStore((state) => state.setSimulationSeed);
+  const randomizeSimulationSeed = useStore((state) => state.randomizeSimulationSeed);
   const nodes = useStore((state) => state.nodes);
 
   const demandTotals = useMemo(() => {
@@ -185,7 +188,34 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               <label className="text-xs text-slate-400 font-bold mb-1 block">Simulation time base</label>
               <p className="text-sm font-semibold text-slate-700">1 tick = 1 simulated minute</p>
               <p className="text-xs text-slate-500 mt-1">
-                Processing, lead time, throughput, and demand all use this same unit to keep calculations consistent.
+                Run Time = observation window. Working = queue + processing. Elapsed = spawn to completion.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">Simulation Seed</h3>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+              <div>
+                <label className="text-xs text-slate-400 font-bold mb-1 block">Deterministic seed</label>
+                <input
+                  type="number"
+                  value={simulationSeed}
+                  onChange={(event) => setSimulationSeed(Number(event.target.value))}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={randomizeSimulationSeed}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                <RefreshCw size={14} />
+                Randomize Seed
+              </button>
+              <p className="text-xs text-slate-500">
+                Reset and rerun with the same seed to replay the same stochastic outcomes.
               </p>
             </div>
           </div>

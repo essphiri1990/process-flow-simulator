@@ -1,6 +1,5 @@
-// Single source of truth for simulation time math.
+// Single source of truth for working-hours time math.
 // 1 tick = 1 simulated minute.
-// Transit animation can be decoupled from what the user-facing clock displays.
 
 import {
   DEFAULT_WORKING_HOURS,
@@ -10,15 +9,6 @@ import {
   TICKS_PER_WEEK,
   WorkingHoursConfig,
 } from './types';
-
-export interface ClockPolicy {
-  /** If true, the user-facing clock includes transit ticks; if false, it excludes them. */
-  countTransitInClock: boolean;
-}
-
-export const DEFAULT_CLOCK_POLICY: ClockPolicy = {
-  countTransitInClock: false,
-};
 
 const clampNumber = (value: number, min: number, max: number): number => {
   if (!Number.isFinite(value)) return min;
@@ -74,30 +64,6 @@ export const computeOpenTicksForPeriod = (totalTicks: number, config?: WorkingHo
   }
 
   return Math.min(openTicks, safeTotal);
-};
-
-/**
- * Compute the auto transit duration (in ticks) between two nodes based on Manhattan distance.
- * If a custom transit time is provided, it is used instead.
- * Keeps the original visual pacing (5–30 ticks) so multiple items can be seen in transit.
- */
-export const computeTransitDuration = (distance: number, customTransitTime?: number): number => {
-  if (customTransitTime !== undefined && customTransitTime > 0) return customTransitTime;
-  return Math.max(5, Math.min(30, Math.round(distance / 25)));
-};
-
-/**
- * Update the display clock based on policy.
- * tickCount is total simulation ticks.
- * cumulativeTransitTicks is the total ticks items have spent in transit so far.
- */
-export const computeDisplayTickCount = (
-  tickCount: number,
-  cumulativeTransitTicks: number,
-  policy: ClockPolicy
-): number => {
-  if (policy.countTransitInClock) return tickCount;
-  return Math.max(0, tickCount - cumulativeTransitTicks);
 };
 
 // Convenience exports for consumers that need the unit constants in one place.

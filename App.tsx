@@ -19,6 +19,8 @@ import AnnotationNode from './components/AnnotationNode';
 import Sidebar from './components/Sidebar';
 import Controls from './components/Controls';
 import ConfigPanel from './components/ConfigPanel';
+import ConfirmDialog from './components/ConfirmDialog';
+import ProcessGallery from './components/ProcessGallery';
 import ToastContainer from './components/Toast';
 import SunMoonCycle from './components/SunMoonCycle';
 import Onboarding, { shouldShowOnboarding } from './components/Onboarding';
@@ -26,8 +28,10 @@ import ErrorBoundary from './components/ErrorBoundary';
 import DebugOverlay from './components/DebugOverlay';
 import { computeLeadMetrics } from './metrics';
 import { getProcessBoxSdk } from './processBoxSdk';
+import { shouldRenderProcessFlowSessionPanel } from './sessionSupport';
+import { getLastCanvasId } from './canvas-storage';
 
-import { MousePointer2, Info, Menu, BookOpen, PlayCircle, X } from 'lucide-react';
+import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X } from 'lucide-react';
 
 const nodeTypes = {
   processNode: ProcessNode,
@@ -82,12 +86,12 @@ function ProcessFlowSessionPanel() {
       score: liveThroughput,
       scoreDetails: {
         throughput: liveThroughput,
-        leadTime: Number(leadMetrics.avgLeadTime.toFixed(2)),
+        leadTime: Number(leadMetrics.avgLeadWorking.toFixed(2)),
         wip: itemCounts.wip,
         completed: itemCounts.completed,
       },
     };
-  }, [itemCounts.completed, itemCounts.wip, leadMetrics.avgLeadTime, throughput]);
+  }, [itemCounts.completed, itemCounts.wip, leadMetrics.avgLeadWorking, throughput]);
 
   const refreshSessionUi = useCallback(async () => {
     if (!sdk?.isEmbedded) return;
@@ -105,12 +109,14 @@ function ProcessFlowSessionPanel() {
     if (!sdk?.isEmbedded) return;
 
     void refreshSessionUi();
+    if (sdkContext && sdkContext.supportsFacilitatorMode !== true) return;
+
     const timer = window.setInterval(() => {
       void refreshSessionUi();
     }, 4000);
 
     return () => window.clearInterval(timer);
-  }, [refreshSessionUi, sdk]);
+  }, [refreshSessionUi, sdk, sdkContext]);
 
   const launchMode = sdkContext?.launchMode || 'solo';
   const currentSession = sessionState?.currentSession || null;
@@ -118,7 +124,11 @@ function ProcessFlowSessionPanel() {
   const scoreboard = sessionState?.scoreboard || currentSession?.scoreboard || {};
   const participants = sessionState?.participants || [];
   const facilitatorView = launchMode === 'facilitator' || participant?.role === 'facilitator';
-  const shouldRender = Boolean(sdk?.isEmbedded && (launchMode !== 'solo' || currentSession));
+  const shouldRender = shouldRenderProcessFlowSessionPanel({
+    isEmbedded: Boolean(sdk?.isEmbedded),
+    sdkContext,
+    currentSession
+  });
   const sessionActive = currentSession?.state === 'active';
   const shareLink = currentSession?.shareLink || '';
   const activeParticipants = participants.filter((entry: any) => !entry?.left_at && !entry?.is_kicked);
@@ -162,6 +172,7 @@ function ProcessFlowSessionPanel() {
     });
   }, [currentSession?.shareLink, runAction, sdk]);
 
+  if (sdkContext && sdkContext.supportsFacilitatorMode !== true) return null;
   if (!shouldRender) return null;
 
   return (
@@ -440,7 +451,7 @@ function ProcessFlowSessionPanel() {
   );
 }
 
-function Flow() {
+function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
   const {
     nodes,
     edges,
@@ -449,11 +460,12 @@ function Flow() {
     connect,
     reconnectEdge,
     deleteNode,
-    restoreLatestCloudSave,
   } = useStore();
+  const lastRunSummary = useStore((state) => state.lastRunSummary);
 
   // Edge reconnection ref to track the edge being updated
   const edgeReconnectSuccessful = useRef(true);
+  const openedRunSummaryKeyRef = useRef<string | null>(null);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
@@ -463,13 +475,20 @@ function Flow() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding);
   const [showModelPrimer, setShowModelPrimer] = useState(() => !localStorage.getItem(MODEL_PRIMER_KEY));
-  const hasRestoredCloudSaveRef = useRef(false);
 
   useEffect(() => {
-    if (hasRestoredCloudSaveRef.current) return;
-    hasRestoredCloudSaveRef.current = true;
-    restoreLatestCloudSave();
-  }, [restoreLatestCloudSave]);
+    if (!lastRunSummary || lastRunSummary.outcome !== 'target_run_completed') return;
+    const runKey = [
+      lastRunSummary.canvasId || 'local',
+      lastRunSummary.seed,
+      lastRunSummary.simulatedTicks,
+      lastRunSummary.completed,
+      lastRunSummary.arrivals,
+    ].join(':');
+    if (openedRunSummaryKeyRef.current === runKey) return;
+    openedRunSummaryKeyRef.current = runKey;
+    setIsAnalyticsOpen(true);
+  }, [lastRunSummary]);
 
   const handleNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     // Open config for process, start, and end nodes
@@ -538,7 +557,6 @@ function Flow() {
     store.loadScenario('coffee');
     store.setDurationPreset('1hour');
     store.setSpeedPreset('1x');
-    store.setCountTransitInClock(false);
     store.startSimulation();
   }, []);
 
@@ -581,7 +599,7 @@ function Flow() {
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-500">How to Read This Simulation</div>
                   <div className="text-sm text-slate-700 mt-0.5 leading-snug">
-                    Clock = elapsed timeline. Lead = queue + processing per completed item. Throughput = end completions/hour from recent window.
+                    Lead Time = queue + processing. Run Time = the observation window. Throughput is based on completed items over the selected window.
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
@@ -613,6 +631,15 @@ function Flow() {
       )}
 
       {/* Help Button (Top Right) */}
+      <button
+        onClick={onBackToGallery}
+        className="fixed top-3 left-16 z-30 flex items-center gap-2 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-sm font-medium text-slate-700 shadow-md backdrop-blur-md transition hover:bg-white hover:text-slate-950"
+        title="Back to gallery"
+      >
+        <ArrowLeft size={15} />
+        Gallery
+      </button>
+
       <button
         onClick={() => setShowHelp(!showHelp)}
         className={`absolute top-3 right-3 z-10 p-2 rounded-lg transition ${
@@ -689,7 +716,7 @@ function Flow() {
           className="bg-slate-50"
         >
           <Background color="#cbd5e1" gap={20} size={1} />
-          <FlowControls className="bg-white shadow-lg border border-slate-200 rounded-lg overflow-hidden" />
+          <FlowControls className="bg-white/95 backdrop-blur-lg shadow-2xl border border-slate-200/60 !rounded-xl overflow-hidden" />
         </ReactFlow>
       </div>
 
@@ -720,9 +747,6 @@ function Flow() {
         </Suspense>
       )}
 
-      {/* Toast notifications */}
-      <ToastContainer />
-
       {/* First-run onboarding */}
       {showOnboarding && (
         <Onboarding
@@ -734,11 +758,181 @@ function Flow() {
   );
 }
 
+function AppShell() {
+  const refreshCanvasList = useStore((state) => state.refreshCanvasList);
+  const savedProcesses = useStore((state) => state.savedCanvasList);
+  const currentCanvasName = useStore((state) => state.currentCanvasName);
+  const nodes = useStore((state) => state.nodes);
+  const edges = useStore((state) => state.edges);
+  const newCanvas = useStore((state) => state.newCanvas);
+  const loadScenario = useStore((state) => state.loadScenario);
+  const importJson = useStore((state) => state.importJson);
+  const loadCanvasFromDb = useStore((state) => state.loadCanvasFromDb);
+  const deleteCanvasFromDb = useStore((state) => state.deleteCanvasFromDb);
+
+  const [appView, setAppView] = useState<'gallery' | 'editor'>('gallery');
+  const [hasEditorSession, setHasEditorSession] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    action: () => void;
+  } | null>(null);
+
+  useEffect(() => {
+    if (appView !== 'gallery') return;
+    void refreshCanvasList();
+  }, [appView, refreshCanvasList]);
+
+  const currentDraft = useMemo(() => {
+    if (!hasEditorSession) return null;
+    return {
+      name: currentCanvasName,
+      nodes,
+      edges,
+    };
+  }, [currentCanvasName, edges, hasEditorSession, nodes]);
+
+  const lastOpenedProcessId = typeof window === 'undefined' ? null : getLastCanvasId();
+
+  const startEditorAction = useCallback(
+    (options: {
+      title: string;
+      confirmLabel: string;
+      action: () => void | Promise<void>;
+    }) => {
+      const execute = () => {
+        void Promise.resolve(options.action()).then(() => {
+          setHasEditorSession(true);
+          setAppView('editor');
+        });
+      };
+
+      if (hasEditorSession) {
+        setConfirmAction({
+          title: options.title,
+          message:
+            'This will replace the process currently open in the editor. Save it first if you want to keep your latest changes.',
+          confirmLabel: options.confirmLabel,
+          action: execute,
+        });
+        return;
+      }
+
+      execute();
+    },
+    [hasEditorSession],
+  );
+
+  const handleCreateBlank = useCallback(() => {
+    startEditorAction({
+      title: 'Create Blank Process',
+      confirmLabel: 'Open Blank',
+      action: () => {
+        newCanvas();
+      },
+    });
+  }, [newCanvas, startEditorAction]);
+
+  const handleCreateTemplate = useCallback(
+    (scenarioKey: string) => {
+      startEditorAction({
+        title: 'Open Template',
+        confirmLabel: 'Open Template',
+        action: () => {
+          if (scenarioKey === 'empty') {
+            newCanvas();
+            return;
+          }
+          loadScenario(scenarioKey);
+        },
+      });
+    },
+    [loadScenario, newCanvas, startEditorAction],
+  );
+
+  const handleImportJson = useCallback(
+    (fileContent: string) => {
+      startEditorAction({
+        title: 'Import Process',
+        confirmLabel: 'Import',
+        action: () => {
+          importJson(fileContent);
+        },
+      });
+    },
+    [importJson, startEditorAction],
+  );
+
+  const handleOpenProcess = useCallback(
+    (id: string) => {
+      startEditorAction({
+        title: 'Open Saved Process',
+        confirmLabel: 'Open Process',
+        action: async () => {
+          await loadCanvasFromDb(id);
+        },
+      });
+    },
+    [loadCanvasFromDb, startEditorAction],
+  );
+
+  const handleDeleteProcess = useCallback(
+    (id: string, name: string) => {
+      setConfirmAction({
+        title: 'Delete Saved Process',
+        message: `Delete "${name}" from your gallery? This cannot be undone.`,
+        confirmLabel: 'Delete',
+        action: () => {
+          void deleteCanvasFromDb(id);
+        },
+      });
+    },
+    [deleteCanvasFromDb],
+  );
+
+  return (
+    <>
+      {appView === 'gallery' ? (
+        <ProcessGallery
+          savedProcesses={savedProcesses}
+          currentDraft={currentDraft}
+          lastOpenedProcessId={lastOpenedProcessId}
+          onResumeCurrent={() => setAppView('editor')}
+          onOpenProcess={handleOpenProcess}
+          onCreateBlank={handleCreateBlank}
+          onCreateTemplate={handleCreateTemplate}
+          onImportJson={handleImportJson}
+          onDeleteProcess={handleDeleteProcess}
+        />
+      ) : (
+        <Flow onBackToGallery={() => setAppView('gallery')} />
+      )}
+
+      {confirmAction ? (
+        <ConfirmDialog
+          title={confirmAction.title}
+          message={confirmAction.message}
+          confirmLabel={confirmAction.confirmLabel}
+          variant="warning"
+          onConfirm={() => {
+            confirmAction.action();
+            setConfirmAction(null);
+          }}
+          onCancel={() => setConfirmAction(null)}
+        />
+      ) : null}
+
+      <ToastContainer />
+    </>
+  );
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
       <ReactFlowProvider>
-        <Flow />
+        <AppShell />
       </ReactFlowProvider>
     </ErrorBoundary>
   );
