@@ -31,6 +31,8 @@ interface ProcessGalleryProps {
   onCreateTemplate: (scenarioKey: string) => void;
   onImportJson: (fileContent: string) => void;
   onDeleteProcess: (id: string, name: string) => void;
+  canShareProcesses?: boolean;
+  onShareProcess?: (process: CanvasMetadata) => void;
 }
 
 const TEMPLATE_CARDS = [
@@ -74,6 +76,8 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
   onCreateTemplate,
   onImportJson,
   onDeleteProcess,
+  canShareProcesses = false,
+  onShareProcess,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -104,14 +108,14 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(16,185,129,0.12),_transparent_32%),linear-gradient(180deg,#f8fafc_0%,#eef2ff_48%,#f8fafc_100%)] text-slate-950">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
-        <header className="rounded-[32px] border border-white/60 bg-white/80 px-6 py-6 shadow-[0_22px_60px_rgba(15,23,42,0.08)] backdrop-blur-md">
+        <header className="rounded-2xl border-2 border-slate-900 bg-white px-6 py-6 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
               <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg shadow-slate-300/40">
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl border-2 border-slate-900 bg-slate-950 text-white">
                   <Layers3 size={20} />
                 </div>
-                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                <span className="rounded-full border-2 border-slate-900 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-600">
                   Process Gallery
                 </span>
               </div>
@@ -127,7 +131,7 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
               <button
                 type="button"
                 onClick={onCreateBlank}
-                className="rounded-[24px] bg-slate-950 px-4 py-4 text-left text-white transition hover:bg-slate-800"
+                className="rounded-xl border-2 border-slate-900 bg-slate-950 px-4 py-4 text-left text-white shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] transition hover:bg-slate-800 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
               >
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   <Plus size={16} />
@@ -138,7 +142,7 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
               <button
                 type="button"
                 onClick={handleImportClick}
-                className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 text-left transition hover:border-slate-300 hover:bg-slate-50"
+                className="rounded-xl border-2 border-slate-900 bg-white px-4 py-4 text-left shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] transition hover:bg-slate-50 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
               >
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                   <FileUp size={16} />
@@ -149,7 +153,7 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
               <button
                 type="button"
                 onClick={() => onCreateTemplate('coffee')}
-                className="rounded-[24px] border border-blue-200 bg-blue-50 px-4 py-4 text-left transition hover:border-blue-300 hover:bg-blue-100/70"
+                className="rounded-xl border-2 border-slate-900 bg-blue-50 px-4 py-4 text-left shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] transition hover:bg-blue-100/70 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
               >
                 <div className="flex items-center gap-2 text-sm font-semibold text-blue-950">
                   <Coffee size={16} />
@@ -170,14 +174,14 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
         />
 
         <section className="mt-8 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-          <div className="rounded-[28px] border border-slate-200 bg-white/90 p-5 shadow-[0_18px_48px_rgba(15,23,42,0.08)]">
+          <div className="rounded-2xl border-2 border-slate-900 bg-white p-5 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
             <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
               <Activity size={14} />
               Continue
             </div>
 
             {currentDraft ? (
-              <div className="mt-4 rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
+              <div className="mt-4 rounded-xl border-2 border-slate-300 bg-slate-50 p-4">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
                   <div className="min-w-0 flex-1">
                     <div className="text-lg font-semibold text-slate-950">{currentDraft.name}</div>
@@ -191,7 +195,7 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
                     <button
                       type="button"
                       onClick={onResumeCurrent}
-                      className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+                      className="mt-4 inline-flex items-center gap-2 rounded-xl border-2 border-slate-900 bg-slate-950 px-3.5 py-2 text-sm font-semibold text-white shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] transition hover:bg-slate-800 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
                     >
                       <FolderPlus size={14} />
                       Resume Current Process
@@ -208,13 +212,13 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="mt-4 rounded-[24px] border border-dashed border-slate-300 bg-slate-50/70 px-5 py-6 text-sm text-slate-500">
+              <div className="mt-4 rounded-xl border-2 border-dashed border-slate-400 bg-slate-50 px-5 py-6 text-sm text-slate-500">
                 No editor session is open yet. Start from a blank process, a template, or one of your saved cards below.
               </div>
             )}
           </div>
 
-          <div className="rounded-[28px] border border-slate-200 bg-white/90 p-5 shadow-[0_18px_48px_rgba(15,23,42,0.08)]">
+          <div className="rounded-2xl border-2 border-slate-900 bg-white p-5 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
             <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Resume Last</div>
             {lastOpenedProcess ? (
               <div className="mt-4">
@@ -224,10 +228,12 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
                   onDelete={onDeleteProcess}
                   badgeLabel="Last Opened"
                   muted
+                  canShare={canShareProcesses}
+                  onShare={onShareProcess}
                 />
               </div>
             ) : (
-              <div className="mt-4 rounded-[24px] border border-dashed border-slate-300 bg-slate-50/70 px-5 py-6 text-sm text-slate-500">
+              <div className="mt-4 rounded-xl border-2 border-dashed border-slate-400 bg-slate-50 px-5 py-6 text-sm text-slate-500">
                 No previous saved process has been opened on this device yet.
               </div>
             )}
@@ -240,7 +246,7 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
               <h2 className="text-xl font-semibold text-slate-950">Recent Processes</h2>
               <p className="mt-1 text-sm text-slate-500">Latest saved workspaces from Process Box cloud save or local browser storage.</p>
             </div>
-            <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+            <span className="rounded-full border-2 border-slate-900 bg-white px-3 py-1 text-xs font-semibold text-slate-700">
               {savedProcesses.length} saved
             </span>
           </div>
@@ -254,12 +260,14 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
                   onOpen={onOpenProcess}
                   onDelete={onDeleteProcess}
                   badgeLabel={process.id === lastOpenedProcessId ? 'Recent' : undefined}
+                  canShare={canShareProcesses}
+                  onShare={onShareProcess}
                 />
               ))}
             </div>
           ) : (
-            <div className="mt-4 rounded-[28px] border border-dashed border-slate-300 bg-white/70 px-6 py-12 text-center shadow-[0_18px_48px_rgba(15,23,42,0.04)]">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
+            <div className="mt-4 rounded-2xl border-2 border-dashed border-slate-400 bg-white px-6 py-12 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border-2 border-slate-900 bg-slate-100 text-slate-500">
                 <Layers3 size={22} />
               </div>
               <h3 className="mt-4 text-lg font-semibold text-slate-900">No saved processes yet</h3>
@@ -284,9 +292,9 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
                   key={template.key}
                   type="button"
                   onClick={() => onCreateTemplate(template.key)}
-                  className={`group rounded-[28px] border border-slate-200 bg-gradient-to-br ${template.className} p-5 text-left shadow-[0_16px_40px_rgba(15,23,42,0.06)] transition hover:-translate-y-1 hover:shadow-[0_18px_44px_rgba(15,23,42,0.1)]`}
+                  className={`group rounded-2xl border-2 border-slate-900 bg-gradient-to-br ${template.className} p-5 text-left shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] transition hover:-translate-y-1 hover:shadow-[6px_6px_0px_0px_rgba(15,23,42,0.2)] active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.15)]`}
                 >
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/80 text-slate-900 shadow-sm">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl border-2 border-slate-900 bg-white text-slate-900">
                     <Icon size={20} />
                   </div>
                   <div className="mt-6 text-lg font-semibold text-slate-950">{template.title}</div>

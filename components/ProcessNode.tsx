@@ -10,6 +10,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const itemConfig = useStore((state) => state.itemConfig);
   const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const deleteNode = useStore((state) => state.deleteNode);
+  const readOnlyMode = useStore((state) => state.readOnlyMode);
   const timeUnit = useStore((state) => state.timeUnit);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
@@ -71,23 +72,19 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   }
 
   // Bottleneck & Validation Styles
-  let borderColor = "border-slate-200";
+  let borderColor = "border-slate-300";
   let ringColor = "ring-blue-500/20";
-  let shadowColor = "";
   let bgOverlay = "";
 
   if (data.validationError) {
       borderColor = "border-red-500";
-      shadowColor = "shadow-red-200";
       bgOverlay = "bg-red-50/30";
   } else if (selected) {
       borderColor = "border-blue-500";
   } else if (queuedItems.length >= 10) {
       borderColor = "border-red-400";
-      shadowColor = "shadow-red-100";
   } else if (queuedItems.length >= 3) {
       borderColor = "border-amber-400";
-      shadowColor = "shadow-amber-100";
   }
 
   // Active Source Indicator
@@ -124,7 +121,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   return (
     <div
-      className={`group w-72 bg-white rounded-xl shadow-xl border-2 transition-all duration-300 relative ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${shadowColor} ${bgOverlay}`}
+      className={`group w-72 bg-white rounded-xl border-2 transition-all duration-300 relative shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${bgOverlay}`}
     >
       {/* Validation Warning Badge */}
       {data.validationError && (
@@ -134,32 +131,34 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       )}
 
       {/* Delete Button (On Hover) */}
-      <button
-          onClick={handleDelete}
-          className="absolute -top-3 -right-3 bg-white text-slate-400 border border-slate-200 hover:text-red-500 hover:border-red-500 p-1.5 rounded-full shadow-sm z-50 opacity-0 group-hover:opacity-100 transition-opacity"
-          title="Delete Node"
-      >
-          <Trash2 size={12} />
-      </button>
+      {!readOnlyMode ? (
+        <button
+            onClick={handleDelete}
+            className="absolute -top-3 -right-3 bg-white text-slate-400 border-2 border-slate-900 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] z-50 opacity-0 group-hover:opacity-100 transition-all"
+            title="Delete Node"
+        >
+            <Trash2 size={12} />
+        </button>
+      ) : null}
 
       {/* OMNI-HANDLES: Top, Right, Bottom, Left. Each side has both Source and Target to allow full flexibility. */}
       {/* Handles are visible on hover AND when selected for better discoverability */}
 
       {/* Left */}
-      <Handle type="target" position={Position.Left} id="left-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="source" position={Position.Left} id="left-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      {!readOnlyMode ? <Handle type="target" position={Position.Left} id="left-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="source" position={Position.Left} id="left-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
 
       {/* Top */}
-      <Handle type="target" position={Position.Top} id="top-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="source" position={Position.Top} id="top-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      {!readOnlyMode ? <Handle type="target" position={Position.Top} id="top-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="source" position={Position.Top} id="top-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
 
       {/* Right */}
-      <Handle type="target" position={Position.Right} id="right-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="source" position={Position.Right} id="right-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      {!readOnlyMode ? <Handle type="target" position={Position.Right} id="right-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="source" position={Position.Right} id="right-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
 
       {/* Bottom */}
-      <Handle type="target" position={Position.Bottom} id="bottom-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="source" position={Position.Bottom} id="bottom-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      {!readOnlyMode ? <Handle type="target" position={Position.Bottom} id="bottom-target" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="source" position={Position.Bottom} id="bottom-source" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
 
 
       {/* Content Wrapper */}
@@ -277,7 +276,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
           {/* Footer Stats */}
           <div className="bg-slate-50 border-t border-slate-100 py-2 px-4 flex justify-between items-center text-xs">
              <span className="text-slate-500 font-medium">Processed</span>
-             <span className="font-mono font-bold text-green-600 bg-green-50 px-2 rounded border border-green-100">
+             <span className="font-mono font-bold text-green-700 bg-green-100 px-2 rounded-md border-2 border-green-600">
                 {data.stats.processed}
              </span>
           </div>

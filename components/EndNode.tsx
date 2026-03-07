@@ -9,6 +9,7 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const items = useStore((state) => state.itemsByNode.get(id) || []);
   const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const deleteNode = useStore((state) => state.deleteNode);
+  const readOnlyMode = useStore((state) => state.readOnlyMode);
   const timeUnit = useStore((state) => state.timeUnit);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
@@ -44,10 +45,10 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   return (
     <div
-      className={`group w-64 bg-slate-900 text-white rounded-xl shadow-xl border-2 transition-all duration-300 relative ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''}`}
+      className={`group w-64 bg-slate-900 text-white rounded-xl border-2 transition-all duration-300 relative shadow-[4px_4px_0px_0px_rgba(15,23,42,0.5)] ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''}`}
     >
        {/* Badge */}
-       <div className="absolute -top-3 right-4 bg-slate-700 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-md z-50 flex items-center gap-1 uppercase tracking-wider border border-slate-600">
+       <div className="absolute -top-3 right-4 bg-slate-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-full border-2 border-slate-900 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.8)] z-50 flex items-center gap-1 uppercase tracking-wider">
           End <CheckCircle2 size={10} />
       </div>
 
@@ -58,19 +59,21 @@ const EndNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       )}
 
       {/* Delete Button */}
-      <button
-          onClick={handleDelete}
-          className="absolute -top-3 -left-3 bg-slate-700 text-slate-300 border border-slate-600 hover:text-white hover:bg-red-600 p-1.5 rounded-full shadow-sm z-50 opacity-0 group-hover:opacity-100 transition-all"
-          title="Delete Node"
-      >
-          <Trash2 size={12} />
-      </button>
+      {!readOnlyMode ? (
+        <button
+            onClick={handleDelete}
+            className="absolute -top-3 -left-3 bg-slate-700 text-slate-300 border-2 border-slate-900 hover:text-white hover:bg-red-600 p-1.5 rounded-full shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] z-50 opacity-0 group-hover:opacity-100 transition-all"
+            title="Delete Node"
+        >
+            <Trash2 size={12} />
+        </button>
+      ) : null}
 
       {/* Omni-Handles: Targets only - visible on hover AND when selected */}
-      <Handle type="target" position={Position.Left} id="left" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="target" position={Position.Top} id="top" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="target" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="target" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      {!readOnlyMode ? <Handle type="target" position={Position.Left} id="left" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="target" position={Position.Top} id="top" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="target" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="target" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
 
       {/* Color accent bar */}
       <div className="w-full h-1 rounded-t-[10px]" style={{ backgroundColor: data.headerColor || defaultHeaderColor }} />

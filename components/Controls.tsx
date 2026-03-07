@@ -75,6 +75,7 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
     speedPreset,
     ticksPerSecond,
     simulationProgress,
+    readOnlyMode,
     setDurationPreset,
     setMetricsWindowCompletions,
     setSpeedPreset
@@ -182,16 +183,16 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
   const activeCount = itemCounts.wip;
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white/95 backdrop-blur-lg shadow-2xl border border-slate-200/80 p-1.5 rounded-2xl z-50">
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white border-2 border-slate-900 p-1.5 rounded-2xl z-50 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
 
       {/* Playback Controls */}
       <div className="flex items-center gap-1 px-1">
         <button
             onClick={isRunning ? pauseSimulation : startSimulation}
-            className={`h-9 w-20 justify-center text-white rounded-xl transition-all flex items-center gap-1.5 font-semibold text-sm ${
+            className={`h-9 w-20 justify-center text-white rounded-xl transition-all flex items-center gap-1.5 font-semibold text-sm border-2 active:translate-y-[1px] active:shadow-none ${
               isRunning
-                ? 'bg-amber-500 hover:bg-amber-600 shadow-md shadow-amber-200/50'
-                : 'bg-emerald-600 hover:bg-emerald-700 shadow-md shadow-emerald-200/50'
+                ? 'bg-amber-500 hover:bg-amber-600 border-amber-700 shadow-[2px_2px_0px_0px_rgba(180,83,9,0.8)]'
+                : 'bg-emerald-600 hover:bg-emerald-700 border-emerald-800 shadow-[2px_2px_0px_0px_rgba(6,95,70,0.8)]'
             }`}
             title={isRunning ? 'Pause' : 'Run Continuous'}
         >
@@ -223,9 +224,9 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
           <select
             value={durationPreset}
             onChange={(e) => setDurationPreset(e.target.value)}
-            disabled={demandMode === 'target'}
+            disabled={demandMode === 'target' || readOnlyMode}
             className={`appearance-none h-9 border rounded-lg pl-2.5 pr-7 text-xs font-medium transition-all focus:outline-none focus:ring-2 focus:ring-blue-400 ${
-              demandMode === 'target'
+              demandMode === 'target' || readOnlyMode
                 ? 'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed'
                 : 'bg-slate-50 border-slate-200 text-slate-700 cursor-pointer hover:bg-slate-100 hover:border-slate-300'
             }`}
@@ -272,13 +273,19 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
         {/* Auto Feed */}
         <button
           onClick={toggleAutoInjection}
-          disabled={demandMode === 'target'}
+          disabled={demandMode === 'target' || readOnlyMode}
           className={`h-9 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-medium transition-all border ${
             autoInjectionEnabled
               ? 'bg-purple-50 border-purple-200 text-purple-700'
               : 'bg-slate-50 border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-100'
           }`}
-          title={demandMode === 'target' ? 'Auto feed disabled in demand mode' : 'Auto-generate items at start nodes'}
+          title={
+            readOnlyMode
+              ? 'Auto feed is locked in read-only mode'
+              : demandMode === 'target'
+                ? 'Auto feed disabled in demand mode'
+                : 'Auto-generate items at start nodes'
+          }
         >
           {autoInjectionEnabled ? <Zap size={13} fill="currentColor" /> : <ZapOff size={13} />}
           <span className="hidden xl:inline">Feed</span>
@@ -335,9 +342,9 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
       <div className="flex items-center gap-0.5 px-1">
          <button
             onClick={() => selectedNodeId && addItem(selectedNodeId)}
-            disabled={!selectedNodeId}
+            disabled={!selectedNodeId || readOnlyMode}
             className={`hidden xl:flex h-9 items-center gap-1 px-2.5 rounded-xl transition-all text-xs font-medium ${
-              selectedNodeId
+              selectedNodeId && !readOnlyMode
                 ? 'text-blue-600 hover:bg-blue-50'
                 : 'text-slate-300 cursor-not-allowed'
             }`}
@@ -357,9 +364,9 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
 
           <button
             onClick={onEditNode}
-            disabled={!selectedNodeId}
+            disabled={!selectedNodeId || readOnlyMode}
              className={`h-9 w-9 flex items-center justify-center rounded-xl transition-all ${
-              selectedNodeId
+              selectedNodeId && !readOnlyMode
                 ? 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
                 : 'text-slate-300 cursor-not-allowed'
             }`}

@@ -10,6 +10,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const itemConfig = useStore((state) => state.itemConfig);
   const defaultHeaderColor = useStore((state) => state.defaultHeaderColor);
   const deleteNode = useStore((state) => state.deleteNode);
+  const readOnlyMode = useStore((state) => state.readOnlyMode);
   const timeUnit = useStore((state) => state.timeUnit);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
@@ -61,10 +62,10 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   return (
     <div
-      className={`group w-64 bg-white rounded-xl shadow-xl border-2 transition-all duration-300 relative ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${bgOverlay}`}
+      className={`group w-64 bg-white rounded-xl border-2 transition-all duration-300 relative shadow-[4px_4px_0px_0px_rgba(16,185,129,0.3)] ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${bgOverlay}`}
     >
       {/* Badge */}
-      <div className="absolute -top-3 left-4 bg-emerald-600 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-md z-50 flex items-center gap-1 uppercase tracking-wider">
+      <div className="absolute -top-3 left-4 bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-full border-2 border-emerald-800 shadow-[2px_2px_0px_0px_rgba(6,95,70,0.8)] z-50 flex items-center gap-1 uppercase tracking-wider">
           <Play size={10} fill="currentColor" /> Start
       </div>
 
@@ -75,19 +76,21 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       )}
 
       {/* Delete Button */}
-      <button
-          onClick={handleDelete}
-          className="absolute -top-3 -right-3 bg-white text-slate-400 border border-slate-200 hover:text-red-500 hover:border-red-500 p-1.5 rounded-full shadow-sm z-50 opacity-0 group-hover:opacity-100 transition-opacity"
-          title="Delete Node"
-      >
-          <Trash2 size={12} />
-      </button>
+      {!readOnlyMode ? (
+        <button
+            onClick={handleDelete}
+            className="absolute -top-3 -right-3 bg-white text-slate-400 border-2 border-slate-900 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] z-50 opacity-0 group-hover:opacity-100 transition-all"
+            title="Delete Node"
+        >
+            <Trash2 size={12} />
+        </button>
+      ) : null}
 
       {/* Omni-Handles: Sources only - visible on hover AND when selected */}
-      <Handle type="source" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="source" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="source" position={Position.Left} id="left" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
-      <Handle type="source" position={Position.Top} id="top" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} />
+      {!readOnlyMode ? <Handle type="source" position={Position.Right} id="right" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="source" position={Position.Bottom} id="bottom" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="source" position={Position.Left} id="left" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
+      {!readOnlyMode ? <Handle type="source" position={Position.Top} id="top" className="group-hover:!opacity-100 hover:!scale-125" style={{ ...handleBaseStyle, ...handleVisibility }} /> : null}
 
       <div className="overflow-hidden rounded-[10px] w-full h-full">
           {/* Header */}

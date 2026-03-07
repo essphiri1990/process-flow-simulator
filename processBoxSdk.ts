@@ -4,6 +4,15 @@ type SavePayload = {
   tier?: 'guest' | 'registered' | 'premium';
 };
 
+type SharedSimListPayload = {
+  workspaceId?: string | null;
+};
+
+type SharedSimCreatePayload = {
+  saveId: string;
+  title?: string;
+};
+
 type ScoreRunPayload = {
   score: number;
   durationMs?: number | null;
@@ -99,6 +108,10 @@ export type ProcessBoxSdkClient = {
   createCloudSave(payload: SavePayload): Promise<any>;
   deleteCloudSave(saveId: string): Promise<any>;
   clearCloudSaves(): Promise<any>;
+  getSharedSim(): Promise<any>;
+  listSharedSims(payload?: SharedSimListPayload): Promise<any>;
+  createSharedSim(payload: SharedSimCreatePayload): Promise<any>;
+  deleteSharedSim(shareId: string): Promise<any>;
   logScoreRun(payload: ScoreRunPayload): Promise<any>;
   listScoreHistory(limit?: number): Promise<any>;
   getScoreHistoryBest(): Promise<any>;
@@ -204,6 +217,18 @@ function createClient(appId: string): ProcessBoxSdkClient {
     },
     clearCloudSaves() {
       return request('cloudSaves.clear');
+    },
+    getSharedSim() {
+      return request('sharedSim.get');
+    },
+    listSharedSims(payload = {}) {
+      return request('sharedSims.list', payload || {});
+    },
+    createSharedSim(payload) {
+      return request('sharedSims.create', payload || {});
+    },
+    deleteSharedSim(shareId) {
+      return request('sharedSims.delete', { shareId });
     },
     logScoreRun(payload) {
       return request('history.run.log', payload || {});

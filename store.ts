@@ -640,6 +640,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   simulationProgress: 0,
   autoStopEnabled: true,
   simulationSeed: DEFAULT_SIMULATION_SEED,
+  readOnlyMode: false,
   runStartedAtMs: null,
   lastRunSummary: null,
   lastLoggedRunKey: null,
@@ -649,10 +650,22 @@ export const useStore = create<SimulationState>((set, get) => ({
   currentCanvasName: 'Untitled Canvas',
   savedCanvasList: [],
 
-  setNodes: (nodes) => set({ nodes }),
-  setEdges: (edges) => set({ edges }),
-  setItemConfig: (config) => set(state => ({ itemConfig: { ...state.itemConfig, ...config } })),
-  setDefaultHeaderColor: (color) => set({ defaultHeaderColor: color }),
+  setNodes: (nodes) => {
+    if (get().readOnlyMode) return;
+    set({ nodes });
+  },
+  setEdges: (edges) => {
+    if (get().readOnlyMode) return;
+    set({ edges });
+  },
+  setItemConfig: (config) => {
+    if (get().readOnlyMode) return;
+    set(state => ({ itemConfig: { ...state.itemConfig, ...config } }));
+  },
+  setDefaultHeaderColor: (color) => {
+    if (get().readOnlyMode) return;
+    set({ defaultHeaderColor: color });
+  },
   // Time base is fixed to 1 tick = 1 simulated minute.
   // Keep this action for API compatibility with older UI code.
   setTimeUnit: () => set({ timeUnit: 'minutes' }),
@@ -661,6 +674,7 @@ export const useStore = create<SimulationState>((set, get) => ({
     set({ metricsWindowCompletions: Math.round(count) });
   },
   setDemandMode: (mode: DemandMode) => {
+    if (get().readOnlyMode) return;
     set((state) => {
       if (mode === state.demandMode) return state;
       const demandTotalTicks = DEMAND_UNIT_TICKS[state.demandUnit];
@@ -678,6 +692,7 @@ export const useStore = create<SimulationState>((set, get) => ({
     });
   },
   setDemandUnit: (unit: DemandUnit) => {
+    if (get().readOnlyMode) return;
     set((state) => {
       if (unit === state.demandUnit) return state;
       const demandTotalTicks = DEMAND_UNIT_TICKS[unit];
@@ -695,6 +710,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   setDurationPreset: (preset: string) => {
+    if (get().readOnlyMode) return;
     const presetConfig = DURATION_PRESETS[preset];
     if (!presetConfig) return;
     set({
@@ -716,33 +732,43 @@ export const useStore = create<SimulationState>((set, get) => ({
     });
   },
 
-  setAutoStop: (enabled: boolean) => set({ autoStopEnabled: enabled }),
+  setAutoStop: (enabled: boolean) => {
+    if (get().readOnlyMode) return;
+    set({ autoStopEnabled: enabled });
+  },
 
   setSimulationSeed: (seed: number) => {
+    if (get().readOnlyMode) return;
     const normalized = normalizeSeed(seed, get().simulationSeed);
     resetSimulationRng(normalized);
     set({ simulationSeed: normalized });
   },
 
   randomizeSimulationSeed: () => {
+    if (get().readOnlyMode) return;
     const simulationSeed = createRandomSeed();
     resetSimulationRng(simulationSeed);
     set({ simulationSeed });
   },
 
+  setReadOnlyMode: (enabled: boolean) => set({ readOnlyMode: Boolean(enabled) }),
+
   onNodesChange: (changes: NodeChange[]) => {
+    if (get().readOnlyMode) return;
     set({
       nodes: applyNodeChanges(changes, get().nodes) as AppNode[],
     });
   },
 
   onEdgesChange: (changes: EdgeChange[]) => {
+    if (get().readOnlyMode) return;
     set({
       edges: applyEdgeChanges(changes, get().edges),
     });
   },
 
   connect: (connection: Connection) => {
+    if (get().readOnlyMode) return;
     set({
       edges: addEdge({
         ...connection,
@@ -754,12 +780,14 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   deleteEdge: (id: string) => {
+    if (get().readOnlyMode) return;
     set({
         edges: get().edges.filter(e => e.id !== id)
     });
   },
 
   updateEdgeData: (id: string, data: Record<string, any>) => {
+    if (get().readOnlyMode) return;
     set((state) => ({
       edges: state.edges.map(e =>
         e.id === id ? { ...e, data: { ...(e as any).data, ...data } } : e
@@ -768,6 +796,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   reconnectEdge: (oldEdge: Edge, newConnection: Connection) => {
+    if (get().readOnlyMode) return;
     // Replace the old edge with a new connection
     const { edges } = get();
     const filteredEdges = edges.filter(e => e.id !== oldEdge.id);
@@ -782,6 +811,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   deleteNode: (id: string) => {
+    if (get().readOnlyMode) return;
     const { nodes, edges, items } = get();
     const nodeToDelete = nodes.find(n => n.id === id);
     
@@ -803,6 +833,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   addNode: () => {
+    if (get().readOnlyMode) return;
     const id = generateId();
     const newNode: ProcessNode = {
       id,
@@ -824,6 +855,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   addStartNode: () => {
+      if (get().readOnlyMode) return;
       const id = generateId();
       const newNode: StartNode = {
         id,
@@ -846,6 +878,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   addEndNode: () => {
+      if (get().readOnlyMode) return;
       const id = generateId();
       const newNode: EndNode = {
         id,
@@ -867,6 +900,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   addAnnotation: () => {
+    if (get().readOnlyMode) return;
     const id = generateId();
     const newNode: AnnotationNode = {
       id,
@@ -880,6 +914,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   updateNodeData: (id, data) => {
+    if (get().readOnlyMode) return;
     set((state) => {
       const prevNode = state.nodes.find((node) => node.id === id);
       const isProcessNode = prevNode && (prevNode.type === 'processNode' || prevNode.type === 'startNode' || prevNode.type === 'endNode');
@@ -898,6 +933,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   updateNode: (id, partialNode) => {
+    if (get().readOnlyMode) return;
     set({
         nodes: get().nodes.map(n => n.id === id ? { ...n, ...partialNode } : n)
     });
@@ -969,6 +1005,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   clearCanvas: () => {
+    if (get().readOnlyMode) return;
     clearVisualTransferCleanupTimers();
     resetSimulationRng(get().simulationSeed);
     set({ 
@@ -980,9 +1017,13 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   setTickSpeed: (tickSpeed) => set({ tickSpeed }),
   
-  toggleAutoInjection: () => set((state) => ({ autoInjectionEnabled: !state.autoInjectionEnabled })),
+  toggleAutoInjection: () => {
+    if (get().readOnlyMode) return;
+    set((state) => ({ autoInjectionEnabled: !state.autoInjectionEnabled }));
+  },
 
   addItem: (targetNodeId) => {
+    if (get().readOnlyMode) return;
     const currentTick = get().tickCount;
     const metricsEpoch = get().metricsEpoch;
     const newItem = createQueuedItem(targetNodeId, currentTick, metricsEpoch);
@@ -1001,6 +1042,7 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   // Persistence
   restoreLatestCloudSave: () => {
+    if (get().readOnlyMode) return;
     const lastCanvasId = getLastCanvasId();
     if (lastCanvasId) {
       void get().loadCanvasFromDb(lastCanvasId);
@@ -1034,11 +1076,20 @@ export const useStore = create<SimulationState>((set, get) => ({
       });
   },
 
+  loadSnapshot: (snapshot, options = {}) =>
+    applyCloudFlowSnapshot(set, get, snapshot, {
+      canvasId: options.canvasId,
+      canvasName: options.canvasName,
+      successToast: options.successToast ?? null,
+    }),
+
   saveFlow: () => {
+    if (get().readOnlyMode) return;
     void get().saveCanvasToDb();
   },
 
   loadFlow: () => {
+    if (get().readOnlyMode) return;
     const lastCanvasId = getLastCanvasId();
     if (lastCanvasId) {
       void get().loadCanvasFromDb(lastCanvasId);
@@ -1061,6 +1112,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   exportJson: () => {
+      if (get().readOnlyMode) return;
       const state = get();
       const dataStr = JSON.stringify(
         createFlowSnapshot(state, {
@@ -1079,6 +1131,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   importJson: (fileContent) => {
+      if (get().readOnlyMode) return;
       try {
         const flow = JSON.parse(fileContent);
         if (flow.nodes && flow.edges) {
@@ -1123,6 +1176,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
   
   loadScenario: (scenarioKey) => {
+      if (get().readOnlyMode) return;
       const scenario = SCENARIOS[scenarioKey as keyof typeof SCENARIOS];
       if (scenario) {
           clearVisualTransferCleanupTimers();
@@ -1194,6 +1248,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   saveCanvasToDb: async () => {
+    if (get().readOnlyMode) return;
     const sdk = getProcessBoxSdk();
     const state = get();
     const workspaceId = ensureWorkspaceId(state.currentCanvasId);
@@ -1247,6 +1302,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   loadCanvasFromDb: async (id: string) => {
+    if (get().readOnlyMode) return;
     const workspaceId = typeof id === 'string' ? id.trim() : '';
     if (!workspaceId) {
       showToast('error', 'Invalid process id.');
@@ -1316,6 +1372,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   newCanvas: () => {
+    if (get().readOnlyMode) return;
     resetSimulationRng(get().simulationSeed);
     set({
       nodes: [],
@@ -1327,6 +1384,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   renameCurrentCanvas: async (name: string) => {
+    if (get().readOnlyMode) return;
     const nextName = normalizeCanvasName(name);
     const currentCanvasId = get().currentCanvasId;
     set({ currentCanvasName: nextName });
@@ -1344,6 +1402,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
 
   deleteCanvasFromDb: async (id: string) => {
+    if (get().readOnlyMode) return;
     const workspaceId = typeof id === 'string' ? id.trim() : '';
     if (!workspaceId) {
       showToast('error', 'Invalid process id.');
@@ -1867,7 +1926,7 @@ export const useStore = create<SimulationState>((set, get) => ({
           const runKey = buildRunSummaryKey(summary);
           nextLastRunSummary = summary;
 
-          if (runKey !== lastLoggedRunKey) {
+          if (!state.readOnlyMode && runKey !== lastLoggedRunKey) {
             pendingRunLog = {
               score: summary.score,
               durationMs: summary.wallClockDurationMs,

@@ -212,6 +212,92 @@ describe('processBoxSdk client', () => {
     await expect(clearPromise).resolves.toEqual({ deletedCount: 4 });
   });
 
+  it('posts shared simulation requests to the host bridge when embedded', async () => {
+    const mockWindow = createMockWindow({ embedded: true, hostOrigin: 'https://platform.example' });
+    setGlobal('window', mockWindow);
+    setGlobal('document', { referrer: '' });
+
+    const { initProcessBoxSdk } = await loadSdkModule();
+    const client = initProcessBoxSdk('process-flow-simulator');
+
+    const getPromise = client!.getSharedSim();
+    const [getEnvelope, getTargetOrigin] =
+      (mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage.mock.calls[0];
+
+    expect(getTargetOrigin).toBe('https://platform.example');
+    expect(getEnvelope.method).toBe('sharedSim.get');
+
+    mockWindow.dispatchHostMessage('https://platform.example', {
+      channel: 'process-box-sdk',
+      version: '1.0',
+      kind: 'response',
+      requestId: getEnvelope.requestId,
+      ok: true,
+      result: { id: 'share_1' },
+      error: null,
+    });
+
+    await expect(getPromise).resolves.toEqual({ id: 'share_1' });
+
+    const listPromise = client!.listSharedSims({ workspaceId: 'workspace_1' });
+    const [listEnvelope] =
+      (mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage.mock.calls[1];
+
+    expect(listEnvelope.method).toBe('sharedSims.list');
+    expect(listEnvelope.payload.workspaceId).toBe('workspace_1');
+
+    mockWindow.dispatchHostMessage('https://platform.example', {
+      channel: 'process-box-sdk',
+      version: '1.0',
+      kind: 'response',
+      requestId: listEnvelope.requestId,
+      ok: true,
+      result: { shares: [{ id: 'share_1' }] },
+      error: null,
+    });
+
+    await expect(listPromise).resolves.toEqual({ shares: [{ id: 'share_1' }] });
+
+    const createPromise = client!.createSharedSim({ saveId: 'save_1', title: 'Coffee Demo' });
+    const [createEnvelope] =
+      (mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage.mock.calls[2];
+
+    expect(createEnvelope.method).toBe('sharedSims.create');
+    expect(createEnvelope.payload.saveId).toBe('save_1');
+    expect(createEnvelope.payload.title).toBe('Coffee Demo');
+
+    mockWindow.dispatchHostMessage('https://platform.example', {
+      channel: 'process-box-sdk',
+      version: '1.0',
+      kind: 'response',
+      requestId: createEnvelope.requestId,
+      ok: true,
+      result: { share: { id: 'share_2' } },
+      error: null,
+    });
+
+    await expect(createPromise).resolves.toEqual({ share: { id: 'share_2' } });
+
+    const deletePromise = client!.deleteSharedSim('share_2');
+    const [deleteEnvelope] =
+      (mockWindow.parent as { postMessage: ReturnType<typeof vi.fn> }).postMessage.mock.calls[3];
+
+    expect(deleteEnvelope.method).toBe('sharedSims.delete');
+    expect(deleteEnvelope.payload.shareId).toBe('share_2');
+
+    mockWindow.dispatchHostMessage('https://platform.example', {
+      channel: 'process-box-sdk',
+      version: '1.0',
+      kind: 'response',
+      requestId: deleteEnvelope.requestId,
+      ok: true,
+      result: { deleted: true },
+      error: null,
+    });
+
+    await expect(deletePromise).resolves.toEqual({ deleted: true });
+  });
+
   it('rejects requests outside embedded mode', async () => {
     const mockWindow = createMockWindow({ embedded: false });
     setGlobal('window', mockWindow);

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowUpRight, Clock3, FolderOpen, Trash2 } from 'lucide-react';
+import { ArrowUpRight, Clock3, FolderOpen, Share2, Trash2 } from 'lucide-react';
 import { CanvasMetadata } from '../types';
 import ProcessThumbnail from './ProcessThumbnail';
 
@@ -7,6 +7,8 @@ interface ProcessCardProps {
   process: CanvasMetadata;
   onOpen: (id: string) => void;
   onDelete?: (id: string, name: string) => void;
+  onShare?: (process: CanvasMetadata) => void;
+  canShare?: boolean;
   badgeLabel?: string;
   muted?: boolean;
 }
@@ -25,29 +27,33 @@ const formatUpdatedAt = (value: number): string => {
 };
 
 const sourceStyles: Record<CanvasMetadata['source'], string> = {
-  cloud: 'bg-blue-50 text-blue-700 border-blue-100',
-  local: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+  cloud: 'bg-blue-50 text-blue-700 border-slate-900',
+  local: 'bg-emerald-50 text-emerald-700 border-slate-900',
 };
 
 const ProcessCard: React.FC<ProcessCardProps> = ({
   process,
   onOpen,
   onDelete,
+  onShare,
+  canShare = false,
   badgeLabel,
   muted = false,
 }) => {
+  const showShareAction = canShare && process.source === 'cloud' && Boolean(process.snapshotId) && Boolean(onShare);
+
   return (
     <article
-      className={`group rounded-[28px] border border-slate-200 bg-white/90 p-4 shadow-[0_16px_40px_rgba(15,23,42,0.08)] transition hover:-translate-y-1 hover:shadow-[0_20px_48px_rgba(15,23,42,0.12)] ${
+      className={`group rounded-2xl border-2 border-slate-900 bg-white p-4 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] transition hover:-translate-y-1 hover:shadow-[6px_6px_0px_0px_rgba(15,23,42,0.9)] active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)] ${
         muted ? 'opacity-90' : ''
       }`}
     >
       <div className="flex items-center justify-between gap-3">
-        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${sourceStyles[process.source]}`}>
+        <span className={`rounded-full border-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${sourceStyles[process.source]}`}>
           {process.source}
         </span>
         {badgeLabel ? (
-          <span className="rounded-full bg-slate-950 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white">
+          <span className="rounded-full border-2 border-slate-900 bg-slate-950 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white">
             {badgeLabel}
           </span>
         ) : null}
@@ -73,7 +79,7 @@ const ProcessCard: React.FC<ProcessCardProps> = ({
           <button
             type="button"
             onClick={() => onOpen(process.id)}
-            className="rounded-full bg-slate-950 p-2 text-white transition hover:bg-slate-800"
+            className="rounded-full border-2 border-slate-900 bg-slate-950 p-2 text-white shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] transition hover:bg-slate-800 active:translate-y-[1px] active:shadow-none"
             aria-label={`Open ${process.name}`}
             title={`Open ${process.name}`}
           >
@@ -82,10 +88,10 @@ const ProcessCard: React.FC<ProcessCardProps> = ({
         </div>
 
         <div className="mt-3 flex items-center gap-2 text-xs text-slate-600">
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium">
+          <span className="rounded-full border-2 border-slate-300 bg-slate-100 px-2.5 py-1 font-medium">
             {process.nodeCount} nodes
           </span>
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium">
+          <span className="rounded-full border-2 border-slate-300 bg-slate-100 px-2.5 py-1 font-medium">
             {process.edgeCount} links
           </span>
         </div>
@@ -95,16 +101,26 @@ const ProcessCard: React.FC<ProcessCardProps> = ({
         <button
           type="button"
           onClick={() => onOpen(process.id)}
-          className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+          className="inline-flex items-center gap-2 rounded-xl border-2 border-slate-900 bg-slate-950 px-3.5 py-2 text-sm font-semibold text-white shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] transition hover:bg-slate-800 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
         >
           <FolderOpen size={14} />
           Open
         </button>
+        {showShareAction ? (
+          <button
+            type="button"
+            onClick={() => onShare?.(process)}
+            className="inline-flex items-center gap-2 rounded-xl border-2 border-slate-900 px-3.5 py-2 text-sm font-semibold text-slate-700 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.15)] transition hover:bg-blue-50 hover:text-blue-700 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.15)]"
+          >
+            <Share2 size={14} />
+            Share
+          </button>
+        ) : null}
         {onDelete ? (
           <button
             type="button"
             onClick={() => onDelete(process.id, process.name)}
-            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-3.5 py-2 text-sm font-semibold text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+            className="inline-flex items-center gap-2 rounded-xl border-2 border-slate-900 px-3.5 py-2 text-sm font-semibold text-slate-600 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.15)] transition hover:bg-rose-50 hover:text-rose-700 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.15)]"
           >
             <Trash2 size={14} />
             Delete

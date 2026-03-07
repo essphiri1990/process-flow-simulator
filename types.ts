@@ -396,6 +396,7 @@ export interface SimulationState {
   simulationProgress: number; // 0 to 100
   autoStopEnabled: boolean; // Stop when targetDuration reached
   simulationSeed: number;
+  readOnlyMode: boolean;
   runStartedAtMs: number | null;
   lastRunSummary: RunSummary | null;
   lastLoggedRunKey: string | null;
@@ -427,6 +428,7 @@ export interface SimulationState {
   setAutoStop: (enabled: boolean) => void;
   setSimulationSeed: (seed: number) => void;
   randomizeSimulationSeed: () => void;
+  setReadOnlyMode: (enabled: boolean) => void;
 
   // Simulation Actions
   startSimulation: () => void;
@@ -447,6 +449,10 @@ export interface SimulationState {
 
   // Persistence & Scenarios
   restoreLatestCloudSave: () => void;
+  loadSnapshot: (
+    snapshot: Record<string, unknown>,
+    options?: { canvasId?: string | null; canvasName?: string | null; successToast?: string | null }
+  ) => boolean;
   saveFlow: () => void;
   loadFlow: () => void;
   exportJson: () => void;

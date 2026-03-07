@@ -21,6 +21,7 @@ import Controls from './components/Controls';
 import ConfigPanel from './components/ConfigPanel';
 import ConfirmDialog from './components/ConfirmDialog';
 import ProcessGallery from './components/ProcessGallery';
+import ShareProcessModal from './components/ShareProcessModal';
 import ToastContainer from './components/Toast';
 import SunMoonCycle from './components/SunMoonCycle';
 import Onboarding, { shouldShowOnboarding } from './components/Onboarding';
@@ -30,6 +31,7 @@ import { computeLeadMetrics } from './metrics';
 import { getProcessBoxSdk } from './processBoxSdk';
 import { shouldRenderProcessFlowSessionPanel } from './sessionSupport';
 import { getLastCanvasId } from './canvas-storage';
+import { CanvasMetadata } from './types';
 
 import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X } from 'lucide-react';
 
@@ -96,8 +98,14 @@ function ProcessFlowSessionPanel() {
   const refreshSessionUi = useCallback(async () => {
     if (!sdk?.isEmbedded) return;
     try {
-      const [context, session] = await Promise.all([sdk.getContext(), sdk.getSession()]);
+      const context = await sdk.getContext();
       setSdkContext(context);
+      if (context?.launchMode === 'viewer') {
+        setSessionState(null);
+        setError(null);
+        return;
+      }
+      const session = await sdk.getSession();
       setSessionState(session);
       setError(null);
     } catch (nextError: any) {
@@ -109,6 +117,7 @@ function ProcessFlowSessionPanel() {
     if (!sdk?.isEmbedded) return;
 
     void refreshSessionUi();
+    if (sdkContext?.launchMode === 'viewer') return;
     if (sdkContext && sdkContext.supportsFacilitatorMode !== true) return;
 
     const timer = window.setInterval(() => {
@@ -172,6 +181,7 @@ function ProcessFlowSessionPanel() {
     });
   }, [currentSession?.shareLink, runAction, sdk]);
 
+  if (sdkContext?.launchMode === 'viewer') return null;
   if (sdkContext && sdkContext.supportsFacilitatorMode !== true) return null;
   if (!shouldRender) return null;
 
@@ -179,7 +189,7 @@ function ProcessFlowSessionPanel() {
     <>
       {showLobby ? (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/25 px-4 pointer-events-none">
-          <div className="w-full max-w-2xl pointer-events-auto rounded-[28px] border border-slate-200 bg-white/96 shadow-2xl backdrop-blur-md overflow-hidden">
+          <div className="w-full max-w-2xl pointer-events-auto rounded-[28px] border-2 border-slate-900 bg-white shadow-[6px_6px_0px_0px_rgba(15,23,42,0.9)] overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 bg-slate-950 text-white">
               <div className="text-[11px] uppercase tracking-[0.24em] text-slate-300">Session Lobby</div>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
@@ -359,7 +369,7 @@ function ProcessFlowSessionPanel() {
         </div>
       ) : (
         <div className="absolute top-16 right-3 z-30 w-[360px] max-w-[calc(100%-1.5rem)] pointer-events-auto">
-          <div className="rounded-2xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur-md overflow-hidden">
+          <div className="rounded-2xl border-2 border-slate-900 bg-white shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-950 text-white">
               <div className="text-[11px] uppercase tracking-[0.22em] text-slate-300">Shared Scoreboard</div>
               <div className="mt-1 flex items-center justify-between gap-3">
@@ -451,7 +461,16 @@ function ProcessFlowSessionPanel() {
   );
 }
 
-function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
+interface FlowProps {
+  onBackToGallery?: (() => void) | null;
+  viewerMode?: boolean;
+  sharedSimMeta?: {
+    title?: string | null;
+    ownerDisplayName?: string | null;
+  } | null;
+}
+
+function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null }: FlowProps) {
   const {
     nodes,
     edges,
@@ -461,7 +480,9 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
     reconnectEdge,
     deleteNode,
   } = useStore();
+  const readOnlyMode = useStore((state) => state.readOnlyMode);
   const lastRunSummary = useStore((state) => state.lastRunSummary);
+  const effectiveReadOnlyMode = viewerMode || readOnlyMode;
 
   // Edge reconnection ref to track the edge being updated
   const edgeReconnectSuccessful = useRef(true);
@@ -473,8 +494,20 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding);
-  const [showModelPrimer, setShowModelPrimer] = useState(() => !localStorage.getItem(MODEL_PRIMER_KEY));
+  const [showOnboarding, setShowOnboarding] = useState(() => !effectiveReadOnlyMode && shouldShowOnboarding);
+  const [showModelPrimer, setShowModelPrimer] = useState(
+    () => !effectiveReadOnlyMode && !localStorage.getItem(MODEL_PRIMER_KEY),
+  );
+
+  useEffect(() => {
+    if (!effectiveReadOnlyMode) return;
+    setSelectedNodeId(null);
+    setIsConfigOpen(false);
+    setIsSettingsOpen(false);
+    setIsSidebarOpen(false);
+    setShowOnboarding(false);
+    setShowModelPrimer(false);
+  }, [effectiveReadOnlyMode]);
 
   useEffect(() => {
     if (!lastRunSummary || lastRunSummary.outcome !== 'target_run_completed') return;
@@ -491,21 +524,23 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
   }, [lastRunSummary]);
 
   const handleNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
+    if (effectiveReadOnlyMode) return;
     // Open config for process, start, and end nodes
     if (['processNode', 'startNode', 'endNode'].includes(node.type || '')) {
       setSelectedNodeId(node.id);
     } else {
       setSelectedNodeId(null);
     }
-  }, []);
+  }, [effectiveReadOnlyMode]);
 
   const handleNodeDoubleClick = useCallback((event: React.MouseEvent, node: Node) => {
+    if (effectiveReadOnlyMode) return;
     // Double-click opens config panel directly
     if (['processNode', 'startNode', 'endNode'].includes(node.type || '')) {
       setSelectedNodeId(node.id);
       setIsConfigOpen(true);
     }
-  }, []);
+  }, [effectiveReadOnlyMode]);
 
   const handlePaneClick = useCallback(() => {
     setSelectedNodeId(null);
@@ -514,11 +549,12 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
 
   const onNodesDelete = useCallback(
     (deleted: Node[]) => {
+      if (effectiveReadOnlyMode) return;
       deleted.forEach((node) => {
         deleteNode(node.id);
       });
     },
-    [deleteNode]
+    [deleteNode, effectiveReadOnlyMode]
   );
 
   // Edge reconnection handlers - allows dragging edge endpoints to different nodes
@@ -546,11 +582,12 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
   );
 
   const nodesWithSelection = useMemo(() => {
+    if (effectiveReadOnlyMode) return nodes;
     return nodes.map(n => ({
       ...n,
       selected: n.id === selectedNodeId
     }));
-  }, [nodes, selectedNodeId]);
+  }, [effectiveReadOnlyMode, nodes, selectedNodeId]);
 
   const runCoffeeQuickStart = useCallback(() => {
     const store = useStore.getState();
@@ -569,26 +606,49 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
     <div className="w-full h-screen bg-slate-50 relative font-sans text-slate-900 overflow-hidden">
 
       {/* Sidebar */}
-      <Sidebar
-        isOpen={isSidebarOpen}
-        onClose={() => setIsSidebarOpen(false)}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-      />
+      {!effectiveReadOnlyMode ? (
+        <Sidebar
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+        />
+      ) : null}
 
       {/* Menu Toggle Button */}
-      {!isSidebarOpen && (
+      {!effectiveReadOnlyMode && !isSidebarOpen ? (
         <button
           onClick={() => setIsSidebarOpen(true)}
-          className="fixed top-3 left-3 z-30 p-2.5 bg-white/90 backdrop-blur-md rounded-xl border border-slate-200/60 shadow-md text-slate-500 hover:text-slate-700 hover:bg-white active:scale-[0.95] transition-all duration-150"
+          className="fixed top-3 left-3 z-30 p-2.5 bg-white rounded-xl border-2 border-slate-900 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] text-slate-700 hover:bg-slate-50 active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)] active:translate-x-[2px] active:translate-y-[2px] transition-all duration-150"
           title="Open Menu"
         >
           <Menu size={18} />
         </button>
-      )}
+      ) : null}
 
-      <DebugOverlay />
+      {!effectiveReadOnlyMode ? <DebugOverlay /> : null}
 
-      {showModelPrimer && (
+      {effectiveReadOnlyMode ? (
+        <div className="absolute top-3 left-3 z-20 max-w-[680px] w-[calc(100%-1.5rem)]">
+          <div className="bg-white/95 backdrop-blur-md rounded-xl border border-slate-200 shadow-lg px-4 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Shared Simulation</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">
+                  {sharedSimMeta?.title || 'Shared Process Simulation'}
+                </div>
+                <div className="mt-1 text-sm text-slate-600 leading-snug">
+                  Read-only access. You can run, pause, reset, and inspect this simulation, but you cannot edit or open other processes.
+                </div>
+                {sharedSimMeta?.ownerDisplayName ? (
+                  <div className="mt-2 text-xs text-slate-500">Shared by {sharedSimMeta.ownerDisplayName}</div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showModelPrimer && !effectiveReadOnlyMode && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 max-w-[680px] w-[calc(100%-180px)]">
           <div className="bg-white/95 backdrop-blur-md rounded-xl border border-slate-200 shadow-lg px-4 py-3">
             <div className="flex items-start justify-between gap-3">
@@ -631,14 +691,16 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
       )}
 
       {/* Help Button (Top Right) */}
-      <button
-        onClick={onBackToGallery}
-        className="fixed top-3 left-16 z-30 flex items-center gap-2 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-sm font-medium text-slate-700 shadow-md backdrop-blur-md transition hover:bg-white hover:text-slate-950"
-        title="Back to gallery"
-      >
-        <ArrowLeft size={15} />
-        Gallery
-      </button>
+      {onBackToGallery && !effectiveReadOnlyMode ? (
+        <button
+          onClick={onBackToGallery}
+          className="fixed top-3 left-16 z-30 flex items-center gap-2 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-sm font-medium text-slate-700 shadow-md backdrop-blur-md transition hover:bg-white hover:text-slate-950"
+          title="Back to gallery"
+        >
+          <ArrowLeft size={15} />
+          Gallery
+        </button>
+      ) : null}
 
       <button
         onClick={() => setShowHelp(!showHelp)}
@@ -650,7 +712,7 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
         <Info size={16} />
       </button>
 
-      <ProcessFlowSessionPanel />
+      {!effectiveReadOnlyMode ? <ProcessFlowSessionPanel /> : null}
 
       {/* Help Panel (Collapsible) */}
       {showHelp && (
@@ -660,22 +722,41 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
             Quick Guide
           </h4>
           <ul className="space-y-1.5">
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-              <span>Double-click a node to configure it</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-              <span>Drag from handles to connect nodes</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-              <span>Drag edge endpoints to reconnect</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-              <span>Enable "Auto Feed" to generate items automatically</span>
-            </li>
+            {effectiveReadOnlyMode ? (
+              <>
+                <li className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span>Use Run, Pause, Step, and Reset to play the shared process.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span>Pan and zoom the map to inspect the full process layout.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span>Open analytics to inspect lead time, throughput, WIP, and run history for this snapshot.</span>
+                </li>
+              </>
+            ) : (
+              <>
+                <li className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span>Double-click a node to configure it</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span>Drag from handles to connect nodes</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span>Drag edge endpoints to reconnect</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span>Enable "Auto Feed" to generate items automatically</span>
+                </li>
+              </>
+            )}
           </ul>
           <div className="mt-3 pt-2 border-t border-slate-100 flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-white border-2 border-red-500" />
@@ -694,29 +775,37 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
         <ReactFlow
           nodes={nodesWithSelection}
           edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={connect}
-          onReconnectStart={onReconnectStart}
-          onReconnect={onReconnect}
-          onReconnectEnd={onReconnectEnd}
-          onNodesDelete={onNodesDelete}
+          onNodesChange={effectiveReadOnlyMode ? undefined : onNodesChange}
+          onEdgesChange={effectiveReadOnlyMode ? undefined : onEdgesChange}
+          onConnect={effectiveReadOnlyMode ? undefined : connect}
+          onReconnectStart={effectiveReadOnlyMode ? undefined : onReconnectStart}
+          onReconnect={effectiveReadOnlyMode ? undefined : onReconnect}
+          onReconnectEnd={effectiveReadOnlyMode ? undefined : onReconnectEnd}
+          onNodesDelete={effectiveReadOnlyMode ? undefined : onNodesDelete}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          onNodeClick={handleNodeClick}
-          onNodeDoubleClick={handleNodeDoubleClick}
+          onNodeClick={effectiveReadOnlyMode ? undefined : handleNodeClick}
+          onNodeDoubleClick={effectiveReadOnlyMode ? undefined : handleNodeDoubleClick}
           onPaneClick={handlePaneClick}
           fitView
           minZoom={0.1}
           maxZoom={4}
-          snapToGrid={true}
+          snapToGrid={!effectiveReadOnlyMode}
           snapGrid={[20, 20]}
+          nodesDraggable={!effectiveReadOnlyMode}
+          nodesConnectable={!effectiveReadOnlyMode}
+          nodesFocusable={!effectiveReadOnlyMode}
+          edgesFocusable={!effectiveReadOnlyMode}
+          edgesUpdatable={!effectiveReadOnlyMode}
+          elementsSelectable={!effectiveReadOnlyMode}
+          selectNodesOnDrag={!effectiveReadOnlyMode}
+          deleteKeyCode={effectiveReadOnlyMode ? null : ['Backspace', 'Delete']}
           connectionLineType={ConnectionLineType.SmoothStep}
           connectionLineStyle={{ stroke: '#3b82f6', strokeWidth: 2, strokeDasharray: '5 5' }}
           className="bg-slate-50"
         >
           <Background color="#cbd5e1" gap={20} size={1} />
-          <FlowControls className="bg-white/95 backdrop-blur-lg shadow-2xl border border-slate-200/60 !rounded-xl overflow-hidden" />
+          <FlowControls className="bg-white border-2 border-slate-900 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] !rounded-xl overflow-hidden" />
         </ReactFlow>
       </div>
 
@@ -735,7 +824,7 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
         />
       )}
 
-      {isSettingsOpen && (
+      {isSettingsOpen && !effectiveReadOnlyMode && (
         <Suspense fallback={<ModalLoading label="Loading Settings..." />}>
           <SettingsModal onClose={() => setIsSettingsOpen(false)} />
         </Suspense>
@@ -748,7 +837,7 @@ function Flow({ onBackToGallery }: { onBackToGallery: () => void }) {
       )}
 
       {/* First-run onboarding */}
-      {showOnboarding && (
+      {showOnboarding && !effectiveReadOnlyMode && (
         <Onboarding
           onDismiss={() => setShowOnboarding(false)}
           onQuickStart={runCoffeeQuickStart}
@@ -769,9 +858,16 @@ function AppShell() {
   const importJson = useStore((state) => state.importJson);
   const loadCanvasFromDb = useStore((state) => state.loadCanvasFromDb);
   const deleteCanvasFromDb = useStore((state) => state.deleteCanvasFromDb);
+  const loadSnapshot = useStore((state) => state.loadSnapshot);
+  const setReadOnlyMode = useStore((state) => state.setReadOnlyMode);
 
   const [appView, setAppView] = useState<'gallery' | 'editor'>('gallery');
   const [hasEditorSession, setHasEditorSession] = useState(false);
+  const [shellStatus, setShellStatus] = useState<'booting' | 'ready' | 'viewer-loading' | 'viewer-ready' | 'viewer-error'>('booting');
+  const [sdkContext, setSdkContext] = useState<any | null>(null);
+  const [sharedSimMeta, setSharedSimMeta] = useState<any | null>(null);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+  const [shareTarget, setShareTarget] = useState<CanvasMetadata | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
     message: string;
@@ -780,9 +876,78 @@ function AppShell() {
   } | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      const sdk = getProcessBoxSdk();
+      if (!sdk?.isEmbedded) {
+        setReadOnlyMode(false);
+        if (!cancelled) setShellStatus('ready');
+        return;
+      }
+
+      try {
+        const context = await sdk.getContext();
+        if (cancelled) return;
+
+        setSdkContext(context);
+
+        if (context?.launchMode === 'viewer') {
+          setShellStatus('viewer-loading');
+          setReadOnlyMode(true);
+
+          try {
+            const share = await sdk.getSharedSim();
+            if (cancelled) return;
+
+            const loaded = loadSnapshot(share?.snapshot || {}, {
+              canvasId: share?.workspaceId || null,
+              canvasName: share?.title || 'Shared Process Simulation',
+              successToast: null,
+            });
+
+            if (!loaded) {
+              throw new Error('This shared simulation snapshot is invalid.');
+            }
+
+            setSharedSimMeta(share || null);
+            setViewerError(null);
+            setHasEditorSession(true);
+            setAppView('editor');
+            setShellStatus('viewer-ready');
+            return;
+          } catch (nextError: any) {
+            if (cancelled) return;
+            setSharedSimMeta(null);
+            setViewerError(nextError?.message || 'This shared simulation could not be opened.');
+            setShellStatus('viewer-error');
+            return;
+          }
+        }
+
+        setReadOnlyMode(false);
+        setSharedSimMeta(null);
+        setViewerError(null);
+        setShellStatus('ready');
+      } catch {
+        if (cancelled) return;
+        setReadOnlyMode(false);
+        setShellStatus('ready');
+      }
+    };
+
+    void bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadSnapshot, setReadOnlyMode]);
+
+  useEffect(() => {
+    if (shellStatus !== 'ready') return;
     if (appView !== 'gallery') return;
     void refreshCanvasList();
-  }, [appView, refreshCanvasList]);
+  }, [appView, refreshCanvasList, shellStatus]);
 
   const currentDraft = useMemo(() => {
     if (!hasEditorSession) return null;
@@ -891,9 +1056,62 @@ function AppShell() {
     [deleteCanvasFromDb],
   );
 
+  const canShareProcesses = Boolean(sdkContext?.sharedSimCapabilities?.canCreate);
+
+  if (shellStatus === 'booting' || shellStatus === 'viewer-loading') {
+    return (
+      <>
+        <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(16,185,129,0.12),_transparent_32%),linear-gradient(180deg,#f8fafc_0%,#eef2ff_48%,#f8fafc_100%)] text-slate-950">
+          <div className="mx-auto flex min-h-screen max-w-3xl items-center justify-center px-6 py-10">
+            <div className="w-full rounded-2xl border-2 border-slate-900 bg-white px-6 py-8 text-center shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+                {shellStatus === 'viewer-loading' ? 'Opening Shared Simulation' : 'Starting Process Flow'}
+              </div>
+              <div className="mt-3 text-xl font-semibold text-slate-950">
+                {shellStatus === 'viewer-loading' ? 'Loading read-only process snapshot...' : 'Loading workspace...'}
+              </div>
+              <div className="mt-2 text-sm text-slate-500">
+                {shellStatus === 'viewer-loading'
+                  ? 'Verifying the shared link and preparing the player.'
+                  : 'Preparing your gallery and editor shell.'}
+              </div>
+            </div>
+          </div>
+        </div>
+        <ToastContainer />
+      </>
+    );
+  }
+
+  if (shellStatus === 'viewer-error') {
+    return (
+      <>
+        <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(16,185,129,0.12),_transparent_32%),linear-gradient(180deg,#f8fafc_0%,#eef2ff_48%,#f8fafc_100%)] text-slate-950">
+          <div className="mx-auto flex min-h-screen max-w-3xl items-center justify-center px-6 py-10">
+            <div className="w-full rounded-2xl border-2 border-slate-900 bg-white px-6 py-8 text-center shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Shared Simulation</div>
+              <div className="mt-3 text-xl font-semibold text-slate-950">This shared process could not be opened.</div>
+              <div className="mt-2 text-sm text-slate-500">{viewerError || 'The link is invalid, expired, or no longer available.'}</div>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="mt-5 rounded-xl border-2 border-slate-900 bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] transition hover:bg-slate-800 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+        <ToastContainer />
+      </>
+    );
+  }
+
   return (
     <>
-      {appView === 'gallery' ? (
+      {shellStatus === 'viewer-ready' ? (
+        <Flow viewerMode sharedSimMeta={sharedSimMeta} />
+      ) : appView === 'gallery' ? (
         <ProcessGallery
           savedProcesses={savedProcesses}
           currentDraft={currentDraft}
@@ -904,6 +1122,8 @@ function AppShell() {
           onCreateTemplate={handleCreateTemplate}
           onImportJson={handleImportJson}
           onDeleteProcess={handleDeleteProcess}
+          canShareProcesses={canShareProcesses}
+          onShareProcess={setShareTarget}
         />
       ) : (
         <Flow onBackToGallery={() => setAppView('gallery')} />
@@ -920,6 +1140,13 @@ function AppShell() {
             setConfirmAction(null);
           }}
           onCancel={() => setConfirmAction(null)}
+        />
+      ) : null}
+
+      {shareTarget ? (
+        <ShareProcessModal
+          process={shareTarget}
+          onClose={() => setShareTarget(null)}
         />
       ) : null}
 
