@@ -17,19 +17,21 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Separate queued and processing in single pass
   const queuedItems: typeof items = [];
   const processingItems: typeof items = [];
-  let leadTimeSum = 0;
+  let waitTimeSum = 0;
   for (const item of items) {
-    if (item.status === ItemStatus.QUEUED || item.status === ItemStatus.PROCESSING) {
-      // Per-node lead time uses the same time buckets as global lead metrics.
-      leadTimeSum += Math.max(0, item.nodeLeadTime);
+    if (item.status === ItemStatus.QUEUED) {
+      queuedItems.push(item);
+      waitTimeSum += Math.max(0, item.nodeLeadTime);
+    } else if (item.status === ItemStatus.PROCESSING) {
+      processingItems.push(item);
+      const processingSoFar = Math.max(0, item.processingDuration - item.remainingTime);
+      waitTimeSum += Math.max(0, item.nodeLeadTime - processingSoFar);
     }
-    if (item.status === ItemStatus.QUEUED) queuedItems.push(item);
-    else if (item.status === ItemStatus.PROCESSING) processingItems.push(item);
   }
   const activeCount = queuedItems.length + processingItems.length;
-  const avgLeadTime = activeCount > 0 ? leadTimeSum / activeCount : 0;
+  const avgWaitTime = activeCount > 0 ? waitTimeSum / activeCount : 0;
 
-  const formatLeadTime = (ticks: number) => {
+  const formatWaitTime = (ticks: number) => {
     if (ticks <= 0) return '0m';
     if (ticks < 60) return `${Math.round(ticks)}m`;
     const hours = Math.floor(ticks / 60);
@@ -186,7 +188,12 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                     <div className="flex gap-3 text-[10px] text-slate-500 font-medium uppercase tracking-wider mt-1">
                         <span className="flex items-center gap-1"><Clock size={10} /> {data.processingTime} {unitAbbrev}</span>
                         <span className="flex items-center gap-1"><Users size={10} /> {data.resources}</span>
-                        <span className="flex items-center gap-1"><Clock size={10} className="text-amber-500" /> Lead {formatLeadTime(avgLeadTime)}</span>
+                        <span
+                          className="flex items-center gap-1"
+                          title="Average current waiting time for active items in this node."
+                        >
+                          <Clock size={10} className="text-amber-500" /> Wait {formatWaitTime(avgWaitTime)}
+                        </span>
                     </div>
                 </div>
              </div>
