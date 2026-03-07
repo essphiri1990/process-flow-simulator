@@ -51,7 +51,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
   };
 
   return (
-    <div className="fixed top-4 right-4 bg-white/90 backdrop-blur shadow-xl border border-slate-200 p-4 rounded-2xl z-40 w-64 transition-all hover:scale-105 group">
+    <div className="fixed top-4 right-4 bg-white border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] p-4 rounded-2xl z-40 w-64 transition-all group">
        <div className="flex justify-between items-center mb-3">
             <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                 <TrendingUp size={16} className="text-blue-600" />
@@ -60,7 +60,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
             {onOpenAnalytics && (
                 <button
                     onClick={onOpenAnalytics}
-                    className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-blue-600"
+                    className="p-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg border-2 border-slate-300 text-slate-500 hover:text-blue-600 transition-all active:translate-y-[1px]"
                     title="View Detailed Analytics"
                 >
                     <BarChart2 size={16} />
@@ -80,7 +80,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
                   {pce.toFixed(1)}%
                 </span>
              </div>
-             <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+             <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden border border-slate-300">
                 <div
                    className={`h-full transition-all duration-500 ${pce > 20 ? 'bg-emerald-500' : 'bg-amber-500'}`}
                    style={{ width: `${Math.min(100, pce)}%` }}
@@ -96,7 +96,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
           </div>
 
           <div className="grid grid-cols-2 gap-3 pt-2">
-             <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+             <div className="bg-slate-50 p-2 rounded-lg border-2 border-slate-200">
                 <div className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
                    <Clock size={10} /> Lead (Working)
                 </div>
@@ -108,7 +108,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
                 </div>
              </div>
 
-             <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+             <div className="bg-slate-50 p-2 rounded-lg border-2 border-slate-200">
                 <div className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
                    <Clock size={10} /> Lead (Elapsed)
                 </div>
@@ -121,7 +121,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
              </div>
 
              {/* WIP */}
-             <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+             <div className="bg-slate-50 p-2 rounded-lg border-2 border-slate-200">
                 <div className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
                    <Hourglass size={10} /> WIP
                 </div>
@@ -133,7 +133,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
                 </div>
              </div>
 
-             <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+             <div className="bg-slate-50 p-2 rounded-lg border-2 border-slate-200">
                 <div className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
                    <Activity size={10} /> Thru (Working)
                 </div>
@@ -144,7 +144,7 @@ const VSMStats: React.FC<VSMStatsProps> = ({ onOpenAnalytics }) => {
              </div>
           </div>
 
-          <div className="text-xs text-center text-slate-400 pt-1 border-t border-slate-100 mt-2 flex items-center justify-center gap-2">
+          <div className="text-xs text-center text-slate-400 pt-1 border-t-2 border-slate-200 mt-2 flex items-center justify-center gap-2">
              <Activity size={12} /> Throughput: <strong className={lowSample ? 'text-slate-400' : 'text-slate-600'}>{throughput.toFixed(1)}</strong> items/hr
              <span className="text-slate-300">|</span> n={sampleSize} <span className="text-slate-300">|</span> {windowLabel}
           </div>

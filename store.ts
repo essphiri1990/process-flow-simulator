@@ -243,6 +243,58 @@ const createWorkspaceId = () => `workspace_${generateId()}`;
 
 const ensureWorkspaceId = (candidate: unknown): string => normalizeWorkspaceId(candidate) || createWorkspaceId();
 
+const getDefaultSourceHandleForNode = (node?: AppNode): string | undefined => {
+  if (!node) return undefined;
+  if (node.type === 'startNode') return 'right';
+  if (node.type === 'processNode') return 'right-source';
+  return undefined;
+};
+
+const getDefaultTargetHandleForNode = (node?: AppNode): string | undefined => {
+  if (!node) return undefined;
+  if (node.type === 'processNode') return 'left-target';
+  if (node.type === 'endNode') return 'left';
+  return undefined;
+};
+
+const normalizeDirectionalEdgeHandles = <
+  T extends {
+    source?: string | null;
+    target?: string | null;
+    sourceHandle?: string | null;
+    targetHandle?: string | null;
+  }
+>(
+  edge: T,
+  nodeById: Map<string, AppNode>
+): T => {
+  const sourceNode = edge.source ? nodeById.get(edge.source) : undefined;
+  const targetNode = edge.target ? nodeById.get(edge.target) : undefined;
+
+  const sourceHandle =
+    edge.sourceHandle == null || edge.sourceHandle === ''
+      ? getDefaultSourceHandleForNode(sourceNode) ?? edge.sourceHandle
+      : edge.sourceHandle;
+  const targetHandle =
+    edge.targetHandle == null || edge.targetHandle === ''
+      ? getDefaultTargetHandleForNode(targetNode) ?? edge.targetHandle
+      : edge.targetHandle;
+
+  return {
+    ...edge,
+    sourceHandle,
+    targetHandle,
+  };
+};
+
+const normalizeFlowEdgeHandles = <T extends Edge | Connection>(
+  nodes: AppNode[],
+  edges: T[]
+): T[] => {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  return edges.map((edge) => normalizeDirectionalEdgeHandles(edge, nodeById));
+};
+
 const createFlowSnapshot = (
   state: Pick<
     SimulationState,
@@ -320,7 +372,7 @@ const applyCloudFlowSnapshot = (
 
   setState({
     nodes: snapshot.nodes,
-    edges: snapshot.edges,
+    edges: normalizeFlowEdgeHandles(snapshot.nodes as AppNode[], snapshot.edges),
     itemConfig: snapshot.itemConfig || getState().itemConfig,
     defaultHeaderColor: snapshot.defaultHeaderColor || getState().defaultHeaderColor,
     durationPreset: snapshot.durationPreset || 'unlimited',
@@ -466,7 +518,7 @@ const SCENARIO_NAMES: Record<string, string> = {
 };
 
 const initialNodes: AppNode[] = SCENARIOS['devops'].nodes as AppNode[];
-const initialEdges: Edge[] = SCENARIOS['devops'].edges as Edge[];
+const initialEdges: Edge[] = normalizeFlowEdgeHandles(initialNodes, SCENARIOS['devops'].edges as Edge[]);
 
 // Helper: Build itemsByNode map and counts in single pass
 const computeDerivedState = (items: ProcessItem[]) => {
@@ -769,9 +821,10 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   connect: (connection: Connection) => {
     if (get().readOnlyMode) return;
+    const normalizedConnection = normalizeFlowEdgeHandles(get().nodes, [connection])[0];
     set({
       edges: addEdge({
-        ...connection,
+        ...normalizedConnection,
         type: 'processEdge',
         animated: false,
         markerEnd: { type: MarkerType.ArrowClosed }
@@ -800,9 +853,10 @@ export const useStore = create<SimulationState>((set, get) => ({
     // Replace the old edge with a new connection
     const { edges } = get();
     const filteredEdges = edges.filter(e => e.id !== oldEdge.id);
+    const normalizedConnection = normalizeFlowEdgeHandles(get().nodes, [newConnection])[0];
     set({
       edges: addEdge({
-        ...newConnection,
+        ...normalizedConnection,
         type: 'processEdge',
         animated: false,
         markerEnd: { type: MarkerType.ArrowClosed }
@@ -1145,7 +1199,7 @@ export const useStore = create<SimulationState>((set, get) => ({
             resetSimulationRng(simulationSeed);
             set({
                 nodes: flow.nodes,
-                edges: flow.edges,
+                edges: normalizeFlowEdgeHandles(flow.nodes as AppNode[], flow.edges),
                 itemConfig: flow.itemConfig || get().itemConfig,
                 defaultHeaderColor: flow.defaultHeaderColor || get().defaultHeaderColor,
                 durationPreset,
@@ -1181,9 +1235,14 @@ export const useStore = create<SimulationState>((set, get) => ({
       if (scenario) {
           clearVisualTransferCleanupTimers();
           resetSimulationRng(get().simulationSeed);
+          const nodes = JSON.parse(JSON.stringify(scenario.nodes)) as AppNode[];
+          const edges = normalizeFlowEdgeHandles(
+            nodes,
+            JSON.parse(JSON.stringify(scenario.edges)) as Edge[]
+          );
           set({ 
-              nodes: JSON.parse(JSON.stringify(scenario.nodes)), // Deep copy
-              edges: JSON.parse(JSON.stringify(scenario.edges)),
+              nodes,
+              edges,
               demandMode: 'auto',
               demandUnit: 'week',
               demandTotalTicks: DEMAND_UNIT_TICKS.week,

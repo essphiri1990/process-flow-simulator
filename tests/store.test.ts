@@ -430,6 +430,8 @@ describe('Store - Edge Management', () => {
     const state = useStore.getState();
     const edge = state.edges.find(e => e.source === 'start-1' && e.target === newNode!.id);
     expect(edge).toBeDefined();
+    expect(edge?.sourceHandle).toBe('right');
+    expect(edge?.targetHandle).toBe('left-target');
   });
 
   it('deleteEdge removes the specified edge', () => {
@@ -1071,6 +1073,11 @@ describe('Store - Scenario Loading', () => {
     // DevOps has 9 nodes (7 process/start/end + 2 annotations)
     expect(state.nodes.length).toBe(9);
     expect(state.edges.length).toBe(8);
+    expect(state.edges.every((edge) => edge.sourceHandle)).toBe(true);
+    expect(state.edges.every((edge) => edge.targetHandle)).toBe(true);
+    const firstEdge = state.edges.find((edge) => edge.id === 'e1');
+    expect(firstEdge?.sourceHandle).toBe('right');
+    expect(firstEdge?.targetHandle).toBe('left-target');
   });
 
   it('loadScenario("hospital") loads the hospital scenario', () => {

@@ -8,10 +8,6 @@ import {
   YAxis,
   Tooltip,
   Legend,
-  LineChart,
-  Line,
-  AreaChart,
-  Area,
   BarChart,
   Bar,
 } from 'recharts';
@@ -58,6 +54,10 @@ const formatLeadTimeAbsolute = (ticks: number): string => {
   const remainingHours = Math.floor((totalMinutes % TICKS_PER_WORKDAY) / 60);
   return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 };
+
+const truncateNodeLabel = (label: string): string => (
+  label.length > 14 ? `${label.slice(0, 14)}…` : label
+);
 
 const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   const history = useStore((state) => state.history);
@@ -143,6 +143,8 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
         processed: data.stats?.processed || 0,
         failed: data.stats?.failed || 0,
         queueLength: queuedCount,
+        processingCount,
+        activeWip: queuedCount + processingCount,
         utilization: data.resources > 0 ? (processingCount / data.resources) * 100 : 0,
         quality: (data.quality || 1) * 100,
         processingTime: data.processingTime || 0,
@@ -151,16 +153,21 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
     }).sort((a, b) => b.processed - a.processed);
   }, [nodes, items]);
 
-  const trendData = useMemo(
-    () =>
-      history.map((h) => ({
-        elapsed: Number((h.tick / displayConfig.divisor).toFixed(1)),
-        throughput: Number(h.throughput.toFixed(2)),
-        wip: h.wip,
-        completed: h.totalCompleted,
-      })),
-    [history, displayConfig.divisor]
-  );
+  const nodeWipData = useMemo(() => {
+    const activeNodes = nodeStats.filter((node) => node.type !== 'endNode');
+    const sortedNodes = [...activeNodes].sort((a, b) => {
+      if (b.activeWip !== a.activeWip) return b.activeWip - a.activeWip;
+      if (b.queueLength !== a.queueLength) return b.queueLength - a.queueLength;
+      return b.processingCount - a.processingCount;
+    });
+
+    return sortedNodes.slice(0, 8).map((node) => ({
+      node: truncateNodeLabel(node.label),
+      queued: node.queueLength,
+      processing: node.processingCount,
+      total: node.activeWip,
+    }));
+  }, [nodeStats]);
 
   const leadCompositionData = useMemo(
     () => [
@@ -182,12 +189,16 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   );
 
   const nodeOutputData = useMemo(
-    () =>
-      nodeStats.slice(0, 8).map((node) => ({
-        node: node.label.length > 14 ? `${node.label.slice(0, 14)}…` : node.label,
+    () => {
+      const processSteps = nodeStats.filter((node) => node.type === 'processNode');
+      const outputSteps = processSteps.length > 0 ? processSteps : nodeStats.filter((node) => node.type !== 'endNode');
+
+      return outputSteps.slice(0, 8).map((node) => ({
+        node: truncateNodeLabel(node.label),
         processed: node.processed,
         failed: node.failed,
-      })),
+      }));
+    },
     [nodeStats]
   );
 
@@ -257,14 +268,14 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   // If no history, show empty state
   if (history.length < 2) {
     return (
-      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8 text-center border border-slate-200">
-          <div className="bg-slate-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-400">
+      <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl border-2 border-slate-900 shadow-[6px_6px_0px_0px_rgba(15,23,42,0.9)] max-w-2xl w-full p-8 text-center">
+          <div className="bg-slate-100 w-16 h-16 rounded-xl border-2 border-slate-900 flex items-center justify-center mx-auto mb-4 text-slate-500">
             <Activity size={32} />
           </div>
           <h2 className="text-xl font-bold text-slate-800 mb-2">No Data Available</h2>
           <p className="text-slate-500 mb-6">Run the simulation for a few seconds to gather analytics data.</p>
-          <button onClick={onClose} className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-700">
+          <button onClick={onClose} className="bg-slate-950 text-white px-6 py-2 rounded-xl border-2 border-slate-900 font-bold shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] hover:bg-slate-800 active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)] transition-all">
             Close
           </button>
         </div>
@@ -273,33 +284,39 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-5xl w-full h-[90vh] overflow-hidden border border-slate-200 flex flex-col">
+    <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl border-2 border-slate-900 shadow-[6px_6px_0px_0px_rgba(15,23,42,0.9)] max-w-5xl w-full h-[90vh] overflow-hidden flex flex-col">
 
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
+        <div className="px-6 py-4 border-b-2 border-slate-900 flex justify-between items-center bg-slate-950 text-white shrink-0">
           <div className="flex-1">
-            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-              <TrendingUp className="text-blue-600" />
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <TrendingUp size={20} />
               Performance Analytics
             </h2>
-            <p className="text-xs text-slate-500">
-              Real-time simulation metrics • {formatTime(displayTickCount)} {displayConfig.unitName} observed
-              {isRunning && <span className="ml-2 inline-flex items-center gap-1 text-emerald-600 font-bold animate-pulse">● Live</span>}
-            </p>
+            <div className="flex items-center gap-3 mt-1">
+              <p className="text-xs text-slate-300">
+                {formatTime(displayTickCount)} {displayConfig.unitName} observed
+              </p>
+              {isRunning && (
+                <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider bg-emerald-500 text-white px-2 py-0.5 rounded-full animate-pulse">
+                  ● Live
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Progress indicator (when duration is set) */}
           {targetDuration !== Infinity && (
             <div className="flex items-center gap-4 mr-4">
               <div className="text-right">
-                <div className="text-xs text-slate-500 font-medium">Progress</div>
-                <div className="text-sm font-bold text-slate-700">{simulationProgress.toFixed(1)}%</div>
+                <div className="text-[10px] text-slate-400 font-medium uppercase">Progress</div>
+                <div className="text-sm font-bold">{simulationProgress.toFixed(1)}%</div>
               </div>
-              <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden">
+              <div className="w-28 h-2.5 bg-slate-700 rounded-full overflow-hidden border border-slate-600">
                 <div
                   className={`h-full transition-all duration-300 rounded-full ${
-                    simulationProgress >= 100 ? 'bg-emerald-500' : 'bg-blue-500'
+                    simulationProgress >= 100 ? 'bg-emerald-400' : 'bg-blue-400'
                   }`}
                   style={{ width: `${Math.min(100, simulationProgress)}%` }}
                 />
@@ -307,129 +324,119 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
             </div>
           )}
 
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 transition">
-            <X size={20} />
+          <button onClick={onClose} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 hover:text-white transition border border-slate-700">
+            <X size={18} />
           </button>
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50">
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
           {lastRunSummary && (
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+            <div className="bg-white p-5 rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 font-semibold">Latest Run Summary</div>
-                  <div className="text-lg font-semibold text-slate-800 mt-1">
+                  <div className="text-lg font-bold text-slate-800 mt-1">
                     {lastRunSummary.outcome === 'target_run_completed' ? 'Target run completed' : 'Target run stopped early'}
                   </div>
-                  <p className="text-sm text-slate-500 mt-1">
-                    Run Time = observation window. Lead Time = queue + processing.
-                  </p>
                 </div>
                 <span
-                  className={`text-[11px] px-2 py-1 rounded-full border font-semibold ${
+                  className={`text-[11px] px-2.5 py-1 rounded-full border-2 font-bold ${
                     lastRunSummary.outcome === 'target_run_completed'
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-600'
+                      : 'bg-amber-50 text-amber-700 border-amber-600'
                   }`}
                 >
-                  {lastRunSummary.outcome === 'target_run_completed' ? 'Logged to Process Box' : 'Local only'}
+                  {lastRunSummary.outcome === 'target_run_completed' ? 'Logged' : 'Local'}
                 </span>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-4">
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                <div className="bg-slate-50 p-3 rounded-xl border-2 border-slate-200">
                   <div className="text-[10px] text-slate-400 uppercase font-bold">Arrivals</div>
-                  <div className="text-xl font-bold text-slate-700">{lastRunSummary.arrivals}</div>
+                  <div className="text-2xl font-bold text-slate-700">{lastRunSummary.arrivals}</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Completed</div>
-                  <div className="text-xl font-bold text-emerald-600">{lastRunSummary.completed}</div>
+                <div className="bg-emerald-50 p-3 rounded-xl border-2 border-emerald-300">
+                  <div className="text-[10px] text-emerald-600 uppercase font-bold">Completed</div>
+                  <div className="text-2xl font-bold text-emerald-700">{lastRunSummary.completed}</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Backlog</div>
-                  <div className="text-xl font-bold text-amber-600">{lastRunSummary.backlogEnd}</div>
+                <div className="bg-amber-50 p-3 rounded-xl border-2 border-amber-300">
+                  <div className="text-[10px] text-amber-600 uppercase font-bold">Backlog</div>
+                  <div className="text-2xl font-bold text-amber-700">{lastRunSummary.backlogEnd}</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">WIP End</div>
-                  <div className="text-xl font-bold text-blue-600">{lastRunSummary.wipEnd}</div>
-                </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Service Level</div>
-                  <div className="text-xl font-bold text-slate-700">{lastRunSummary.score.toFixed(1)}%</div>
+                <div className="bg-blue-50 p-3 rounded-xl border-2 border-blue-300">
+                  <div className="text-[10px] text-blue-600 uppercase font-bold">Service Level</div>
+                  <div className="text-2xl font-bold text-blue-700">{lastRunSummary.score.toFixed(1)}%</div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+              <div className="grid grid-cols-3 gap-3 mt-3">
+                <div className="bg-slate-50 p-3 rounded-xl border-2 border-slate-200">
                   <div className="text-[10px] text-slate-400 uppercase font-bold">Lead (Working)</div>
-                  <div className="text-base font-bold text-slate-700">{formatLeadTimeAbsolute(lastRunSummary.workingLeadAvg)}</div>
+                  <div className="text-lg font-bold text-slate-700">{formatLeadTimeAbsolute(lastRunSummary.workingLeadAvg)}</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                <div className="bg-slate-50 p-3 rounded-xl border-2 border-slate-200">
                   <div className="text-[10px] text-slate-400 uppercase font-bold">Thru (Working)</div>
-                  <div className="text-base font-bold text-slate-700">{lastRunSummary.workingThroughput.toFixed(1)}/h</div>
+                  <div className="text-lg font-bold text-slate-700">{lastRunSummary.workingThroughput.toFixed(1)}/h</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                <div className="bg-slate-50 p-3 rounded-xl border-2 border-slate-200">
                   <div className="text-[10px] text-slate-400 uppercase font-bold">Seed</div>
-                  <div className="text-base font-bold text-slate-700">{lastRunSummary.seed}</div>
+                  <div className="text-lg font-bold font-mono text-slate-500">{lastRunSummary.seed}</div>
                 </div>
               </div>
             </div>
           )}
 
-          <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-5 rounded-2xl border border-slate-700 shadow-lg">
+          <div className="bg-slate-950 text-white p-5 rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-[10px] uppercase tracking-[0.2em] text-slate-300 font-semibold">Operational Snapshot</div>
-                <div className="text-lg font-semibold mt-1">{executiveSummary.title}</div>
+                <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 font-semibold">Operational Snapshot</div>
+                <div className="text-lg font-bold mt-1">{executiveSummary.title}</div>
                 <p className="text-sm text-slate-300 mt-1 leading-relaxed max-w-3xl">
                   {executiveSummary.message}
                 </p>
               </div>
-              <span className={`text-[11px] px-2 py-1 rounded-full border font-semibold shrink-0 ${sampleConfidence.className}`}>
-                {sampleConfidence.label} confidence
+              <span className={`text-[11px] px-2.5 py-1 rounded-full border-2 font-bold shrink-0 ${sampleConfidence.className}`}>
+                {sampleConfidence.label}
               </span>
             </div>
-            <div className="grid grid-cols-2 lg:grid-cols-2 gap-3 mt-4">
-              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
-                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Thru (Working)</div>
-                <div className="text-xl font-bold mt-1">{leadMetrics.throughputWorkingPerHour.toFixed(1)}<span className="text-sm text-slate-300">/hr</span></div>
+            <div className="grid grid-cols-2 gap-3 mt-4">
+              <div className="bg-white/10 rounded-xl p-3 border-2 border-white/15">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Thru (Working)</div>
+                <div className="text-2xl font-bold mt-1">{leadMetrics.throughputWorkingPerHour.toFixed(1)}<span className="text-sm text-slate-400 ml-1">/hr</span></div>
               </div>
-              <div className="bg-white/10 rounded-xl p-3 border border-white/10">
-                <div className="text-[10px] uppercase tracking-wider text-slate-300 font-semibold">Lead (Working)</div>
-                <div className="text-xl font-bold mt-1">{formatLeadTimeAbsolute(leadMetrics.avgLeadWorking)}</div>
+              <div className="bg-white/10 rounded-xl p-3 border-2 border-white/15">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Lead (Working)</div>
+                <div className="text-2xl font-bold mt-1">{formatLeadTimeAbsolute(leadMetrics.avgLeadWorking)}</div>
               </div>
-            </div>
-            <div className="mt-3 text-xs text-slate-300">
-              Run Time = observation window. Lead Time = queue + processing.
             </div>
           </div>
 
           {demandMode === 'target' && (
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+            <div className="bg-white p-5 rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)]">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
                   <BarChart3 size={16} className="text-slate-500" />
                   End-of-Period Demand Report
                 </h3>
-                <span className="text-xs text-slate-400 uppercase">
+                <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider border-2 border-slate-300 rounded-full px-2.5 py-0.5">
                   per {demandUnit}
                 </span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                <div className="bg-slate-50 p-3 rounded-xl border-2 border-slate-200">
                   <div className="text-[10px] text-slate-400 uppercase font-bold">Target Arrivals</div>
                   <div className="text-xl font-bold text-slate-700">{demandTotals.total}</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Arrivals Generated</div>
-                  <div className="text-xl font-bold text-blue-600">{demandArrivalsGenerated}</div>
+                <div className="bg-blue-50 p-3 rounded-xl border-2 border-blue-300">
+                  <div className="text-[10px] text-blue-600 uppercase font-bold">Arrivals Generated</div>
+                  <div className="text-xl font-bold text-blue-700">{demandArrivalsGenerated}</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Completed</div>
-                  <div className="text-xl font-bold text-emerald-600">{periodCompleted}</div>
+                <div className="bg-emerald-50 p-3 rounded-xl border-2 border-emerald-300">
+                  <div className="text-[10px] text-emerald-600 uppercase font-bold">Completed</div>
+                  <div className="text-xl font-bold text-emerald-700">{periodCompleted}</div>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Backlog (WIP)</div>
-                  <div className="text-xl font-bold text-amber-600">{itemCounts.wip}</div>
+                <div className="bg-amber-50 p-3 rounded-xl border-2 border-amber-300">
+                  <div className="text-[10px] text-amber-600 uppercase font-bold">Backlog (WIP)</div>
+                  <div className="text-xl font-bold text-amber-700">{itemCounts.wip}</div>
                 </div>
               </div>
               {deliveryRate !== null && (
@@ -442,7 +449,7 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                   <div className="font-semibold text-slate-600 mb-1">Per-start-node targets</div>
                   <div className="flex flex-wrap gap-2">
                     {demandTotals.perNode.map((n) => (
-                      <span key={n.id} className="px-2 py-0.5 bg-slate-100 border border-slate-200 rounded">
+                      <span key={n.id} className="px-2 py-0.5 bg-slate-100 border-2 border-slate-300 rounded-lg text-slate-700 font-medium">
                         {n.label}: {n.target}
                       </span>
                     ))}
@@ -455,260 +462,249 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
           {/* Summary Statistics */}
           <div className="flex items-end justify-between">
             <div>
-              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">Core KPIs</h3>
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                <Gauge size={16} className="text-slate-500" />
+                Core KPIs
+              </h3>
               <p className="text-xs text-slate-500 mt-0.5">Windowed metrics from end-of-line completions ({windowLabel}).</p>
             </div>
-            <div className="text-xs text-slate-500">
-              Sample size: <span className="font-semibold text-slate-700">{leadMetrics.sampleSize}</span>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-500 mb-1">
-                <Gauge size={14} />
-                <span className="text-xs font-bold uppercase">Current WIP</span>
-              </div>
-              <div className="text-2xl font-bold text-blue-600">{stats.currentWip}</div>
-              <div className="text-xs text-slate-400">Peak: {stats.peakWip}</div>
-              <div className="text-xs text-slate-400 mt-1">
-                Q {itemCounts.queued} · P {itemCounts.processing} · S {itemCounts.stuck}
-              </div>
-            </div>
-
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-500 mb-1">
-                <CheckCircle2 size={14} />
-                <span className="text-xs font-bold uppercase">Completed</span>
-              </div>
-              <div className="text-2xl font-bold text-emerald-600">{stats.totalCompleted}</div>
-              <div className="text-xs text-slate-400">Total items finished</div>
-            </div>
-
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-500 mb-1">
-                <Activity size={14} />
-                <span className="text-xs font-bold uppercase">Thru (Working)</span>
-              </div>
-              <div className={`text-2xl font-bold ${lowSample ? 'text-slate-400' : 'text-purple-600'}`}>
-                {leadMetrics.throughputWorkingPerHour.toFixed(1)}
-              </div>
-              <div className="text-xs text-slate-400">
-                items / hour • n={leadMetrics.sampleSize} • {windowLabel}
-              </div>
-              <div className="text-xs text-slate-400">avg: {stats.avgThroughput.toFixed(1)}</div>
-            </div>
-
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-500 mb-1">
-                <Activity size={14} />
-                <span className="text-xs font-bold uppercase">PCE</span>
-              </div>
-              <div className={`text-2xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-emerald-600'}`}>
-                {leadMetrics.pce.toFixed(0)}%
-              </div>
-              <div className="text-xs text-slate-400">Value-added efficiency</div>
-            </div>
-
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-2 text-slate-500 mb-1">
-                <Clock size={14} />
-                <span className="text-xs font-bold uppercase">Lead (Working)</span>
-              </div>
-              <div className={`text-2xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-amber-600'}`}>
-                {formatLeadTimeAbsolute(leadMetrics.avgLeadWorking)}
-              </div>
-              <div className="text-xs text-slate-400">Queue + processing</div>
-              <div className="text-xs text-slate-400">n={leadMetrics.sampleSize} • {windowLabel}</div>
-            </div>
-
+            <span className="text-[10px] font-bold uppercase tracking-wider border-2 border-slate-300 rounded-full px-2.5 py-0.5 text-slate-500">
+              n={leadMetrics.sampleSize}
+            </span>
           </div>
 
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-            <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
-              <TrendingUp size={16} className="text-blue-600" />
-              Consultant Readout
-            </h3>
-            <p className="text-sm text-slate-600 leading-relaxed">
-              This snapshot shows how well current capacity is converting incoming demand into completed output.
-              Working throughput and lead time are calculated from recent end-of-line completions, so the KPIs reflect
-              actual delivered outcomes rather than in-flight visual movement.
-            </p>
-            <p className="text-sm text-slate-600 leading-relaxed mt-2">
-              For operations reviews, focus on three signals together: sustained throughput trend, WIP buildup,
-              and lead-time composition (working and closed time). Rising WIP with flat throughput is a bottleneck
-              warning; rising waiting share indicates queue pressure that should be addressed with capacity,
-              balancing, or arrival smoothing.
-            </p>
-            <p className="text-xs text-slate-500 leading-relaxed mt-3">
-              Run Time = observation window. Lead Time = queue + processing.
-            </p>
-            <div className="mt-3 pt-3 border-t border-slate-100">
-              <div className="text-xs uppercase tracking-widest text-slate-400 font-bold">Interpretation Checklist</div>
-              <div className="flex flex-wrap gap-2 mt-2">
-                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
-                  Throughput trend stable
+          {/* Hero KPIs — 3 promoted metrics */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white p-5 rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] flex gap-4 items-start">
+              <div className="w-1.5 h-14 rounded-full bg-blue-500 shrink-0" />
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Current WIP</div>
+                <div className="text-3xl font-bold text-blue-600 mt-1">{stats.currentWip}</div>
+                <div className="text-xs text-slate-400 mt-1">Peak {stats.peakWip} · Q {itemCounts.queued} · P {itemCounts.processing} · S {itemCounts.stuck}</div>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] flex gap-4 items-start">
+              <div className="w-1.5 h-14 rounded-full bg-purple-500 shrink-0" />
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Thru (Working)</div>
+                <div className={`text-3xl font-bold mt-1 ${lowSample ? 'text-slate-400' : 'text-purple-600'}`}>
+                  {leadMetrics.throughputWorkingPerHour.toFixed(1)}<span className="text-base text-slate-400 ml-1">/hr</span>
+                </div>
+                <div className="text-xs text-slate-400 mt-1">avg {stats.avgThroughput.toFixed(1)} · {windowLabel}</div>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] flex gap-4 items-start">
+              <div className="w-1.5 h-14 rounded-full bg-emerald-500 shrink-0" />
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">PCE</div>
+                <div className={`text-3xl font-bold font-mono mt-1 ${lowSample ? 'text-slate-400' : 'text-emerald-600'}`}>
+                  {leadMetrics.pce.toFixed(0)}%
+                </div>
+                <div className="text-xs text-slate-400 mt-1">Value-added efficiency</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Supporting KPIs */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-white p-4 rounded-xl border-2 border-slate-300 flex gap-3 items-start">
+              <CheckCircle2 size={16} className="text-emerald-500 mt-0.5 shrink-0" />
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase font-bold">Completed</div>
+                <div className="text-xl font-bold text-emerald-600">{stats.totalCompleted}</div>
+                <div className="text-xs text-slate-400">Total items finished</div>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border-2 border-slate-300 flex gap-3 items-start">
+              <Clock size={16} className="text-amber-500 mt-0.5 shrink-0" />
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase font-bold">Lead (Working)</div>
+                <div className={`text-xl font-bold font-mono ${lowSample ? 'text-slate-400' : 'text-amber-600'}`}>
+                  {formatLeadTimeAbsolute(leadMetrics.avgLeadWorking)}
+                </div>
+                <div className="text-xs text-slate-400">Queue + processing · {windowLabel}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-blue-50 p-4 rounded-2xl border-2 border-blue-300 flex gap-4 items-start">
+            <TrendingUp size={20} className="text-blue-600 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <h3 className="text-sm font-bold text-blue-900">Consultant Readout</h3>
+              <p className="text-sm text-blue-800 leading-relaxed mt-1">
+                Focus on where work is sitting, which step is producing output, and how much lead time is waiting.
+                Tall queue bars point to bottlenecks; low output or rising failures highlight the step to improve first.
+              </p>
+              <div className="flex flex-wrap gap-2 mt-3">
+                <span className="px-2.5 py-1 rounded-lg border-2 border-blue-400 bg-white text-xs font-bold text-blue-700">
+                  Queue visible
                 </span>
-                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
-                  WIP not rising faster than output
+                <span className="px-2.5 py-1 rounded-lg border-2 border-blue-400 bg-white text-xs font-bold text-blue-700">
+                  Output by step
                 </span>
-                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
-                  Waiting share controlled
+                <span className="px-2.5 py-1 rounded-lg border-2 border-blue-400 bg-white text-xs font-bold text-blue-700">
+                  Waiting controlled
                 </span>
               </div>
             </div>
           </div>
 
-          <div>
-            <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">Trend Analysis</h3>
-          </div>
+          <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+            <Activity size={16} className="text-purple-500" />
+            Flow Diagnostics
+          </h3>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-700 mb-3">Throughput & WIP Trend</h3>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trendData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="elapsed" tick={{ fontSize: 11 }} />
-                    <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
-                    <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
-                    <Tooltip />
-                    <Legend />
-                    <Line yAxisId="left" type="monotone" dataKey="throughput" name="Throughput (items/hr)" stroke="#7c3aed" strokeWidth={2} dot={false} />
-                    <Line yAxisId="right" type="monotone" dataKey="wip" name="WIP" stroke="#0284c7" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+            <div className="bg-white rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] overflow-hidden">
+              <div className="h-1.5 bg-purple-500" />
+              <div className="p-4">
+                <h3 className="text-sm font-bold text-slate-700">Current WIP by Node</h3>
+                <p className="text-xs text-slate-500 mt-1 mb-3">
+                  Queue shows waiting. Processing shows work actively being handled right now.
+                </p>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={nodeWipData} barSize={30}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="node" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="queued" name="Queued" stackId="wip" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="processing" name="Processing" stackId="wip" fill="#7c3aed" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-700 mb-3">Completion Accumulation</h3>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trendData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="elapsed" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip />
-                    <Legend />
-                    <Area type="monotone" dataKey="completed" name="Completed Items" stroke="#16a34a" fill="#86efac" />
-                  </AreaChart>
-                </ResponsiveContainer>
+            <div className="bg-white rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] overflow-hidden">
+              <div className="h-1.5 bg-emerald-500" />
+              <div className="p-4">
+                <h3 className="text-sm font-bold text-slate-700">Process Output by Step</h3>
+                <p className="text-xs text-slate-500 mt-1 mb-3">
+                  Compare completed work and failures across steps to spot weak stations quickly.
+                </p>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={nodeOutputData} barSize={30}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="node" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="processed" name="Processed" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="failed" name="Failed" fill="#dc2626" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
           </div>
 
-          <div>
-            <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">Composition & Demand</h3>
-          </div>
+          <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+            <BarChart3 size={16} className="text-amber-500" />
+            Composition & Demand
+          </h3>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-700 mb-3">Lead-Time Composition</h3>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={leadCompositionData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="ticks" name="Minutes" fill="#f59e0b" />
-                  </BarChart>
-                </ResponsiveContainer>
+            <div className="bg-white rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] overflow-hidden">
+              <div className="h-1.5 bg-amber-500" />
+              <div className="p-4">
+                <h3 className="text-sm font-bold text-slate-700 mb-3">Lead-Time Composition</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={leadCompositionData} barSize={48}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="ticks" name="Minutes" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
             {demandMode === 'target' && (
-              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                <h3 className="text-sm font-bold text-slate-700 mb-3">Demand vs Delivery Balance</h3>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={demandBalanceData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="metric" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip />
-                      <Legend />
-                      <Bar dataKey="value" name="Items" fill="#2563eb" />
-                    </BarChart>
-                  </ResponsiveContainer>
+              <div className="bg-white rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] overflow-hidden">
+                <div className="h-1.5 bg-blue-500" />
+                <div className="p-4">
+                  <h3 className="text-sm font-bold text-slate-700 mb-3">Demand vs Delivery Balance</h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={demandBalanceData} barSize={48}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="metric" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip />
+                        <Legend />
+                        <Bar dataKey="value" name="Items" fill="#2563eb" radius={[6, 6, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
               </div>
             )}
           </div>
 
-          <div>
-            <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">Node Diagnostics</h3>
-          </div>
-          {nodeOutputData.length > 0 && (
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-700 mb-3">Node Output Comparison</h3>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={nodeOutputData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="node" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="processed" name="Processed" fill="#16a34a" />
-                    <Bar dataKey="failed" name="Failed" fill="#dc2626" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          )}
-
+          <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+            <BarChart3 size={16} className="text-emerald-500" />
+            Node Diagnostics
+          </h3>
           {/* Per-Node Statistics Table */}
           {nodeStats.length > 0 && (
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
-                <BarChart3 size={16} className="text-slate-500" />
-                Node Performance
-              </h3>
+            <div className="bg-white rounded-2xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] overflow-hidden">
+              <div className="px-4 py-3 bg-slate-950 text-white flex items-center gap-2">
+                <BarChart3 size={16} />
+                <h3 className="text-sm font-bold">Node Performance</h3>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100">
-                      <th className="text-left py-2 px-3 text-xs font-bold text-slate-500 uppercase">Node</th>
-                      <th className="text-right py-2 px-3 text-xs font-bold text-slate-500 uppercase">Processed</th>
-                      <th className="text-right py-2 px-3 text-xs font-bold text-slate-500 uppercase">Failed</th>
-                      <th className="text-right py-2 px-3 text-xs font-bold text-slate-500 uppercase">Queue</th>
-                      <th className="text-right py-2 px-3 text-xs font-bold text-slate-500 uppercase">Utilization</th>
-                      <th className="text-right py-2 px-3 text-xs font-bold text-slate-500 uppercase">Quality</th>
-                      <th className="text-right py-2 px-3 text-xs font-bold text-slate-500 uppercase">Time/{displayConfig.unitName}</th>
+                    <tr className="border-b-2 border-slate-200 bg-slate-50">
+                      <th className="text-left py-2.5 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Node</th>
+                      <th className="text-right py-2.5 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Processed</th>
+                      <th className="text-right py-2.5 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Failed</th>
+                      <th className="text-right py-2.5 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Queue</th>
+                      <th className="text-right py-2.5 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Utilization</th>
+                      <th className="text-right py-2.5 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Quality</th>
+                      <th className="text-right py-2.5 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Time</th>
                     </tr>
                   </thead>
                   <tbody>
                     {nodeStats.map((node, idx) => (
-                      <tr key={node.id} className={idx % 2 === 0 ? 'bg-slate-50/50' : ''}>
-                        <td className="py-2 px-3">
+                      <tr key={node.id} className={`border-b border-slate-100 ${idx % 2 === 0 ? 'bg-slate-50/50' : ''}`}>
+                        <td className="py-2.5 px-3">
                           <div className="flex items-center gap-2">
-                            <span className={`w-2 h-2 rounded-full ${
-                              node.type === 'startNode' ? 'bg-emerald-500' :
-                              node.type === 'endNode' ? 'bg-red-500' : 'bg-blue-500'
+                            <span className={`w-2.5 h-2.5 rounded-full border-2 ${
+                              node.type === 'startNode' ? 'bg-emerald-500 border-emerald-700' :
+                              node.type === 'endNode' ? 'bg-slate-800 border-slate-950' : 'bg-blue-500 border-blue-700'
                             }`}></span>
-                            <span className="font-medium text-slate-700">{node.label}</span>
+                            <span className="font-semibold text-slate-700">{node.label}</span>
                           </div>
                         </td>
-                        <td className="text-right py-2 px-3 font-mono text-slate-600">{node.processed}</td>
-                        <td className="text-right py-2 px-3 font-mono">
+                        <td className="text-right py-2.5 px-3 font-mono font-bold text-slate-700">{node.processed}</td>
+                        <td className="text-right py-2.5 px-3 font-mono">
                           {node.failed > 0 ? (
-                            <span className="text-red-500 flex items-center justify-end gap-1">
+                            <span className="text-red-600 font-bold flex items-center justify-end gap-1">
                               <AlertTriangle size={12} />
                               {node.failed}
                             </span>
                           ) : (
-                            <span className="text-slate-400">0</span>
+                            <span className="text-slate-300">0</span>
                           )}
                         </td>
-                        <td className="text-right py-2 px-3">
-                          <span className={`font-mono ${node.queueLength > 5 ? 'text-amber-600 font-bold' : 'text-slate-600'}`}>
+                        <td className="text-right py-2.5 px-3">
+                          <span className={`font-mono font-bold ${node.queueLength > 5 ? 'text-amber-600' : 'text-slate-600'}`}>
                             {node.queueLength}
                           </span>
                         </td>
-                        <td className="text-right py-2 px-3">
+                        <td className="text-right py-2.5 px-3">
                           <div className="flex items-center justify-end gap-2">
-                            <div className="w-16 h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="w-16 h-2.5 bg-slate-200 rounded-full overflow-hidden border border-slate-300">
                               <div
                                 className={`h-full transition-all ${
                                   node.utilization > 80 ? 'bg-red-500' :
@@ -717,20 +713,20 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                                 style={{ width: `${Math.min(100, node.utilization)}%` }}
                               />
                             </div>
-                            <span className="text-xs font-mono text-slate-500 w-10 text-right">
+                            <span className="text-xs font-mono font-bold text-slate-600 w-10 text-right">
                               {node.utilization.toFixed(0)}%
                             </span>
                           </div>
                         </td>
-                        <td className="text-right py-2 px-3">
-                          <span className={`font-mono text-xs px-2 py-0.5 rounded ${
-                            node.quality >= 95 ? 'bg-emerald-100 text-emerald-700' :
-                            node.quality >= 80 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
+                        <td className="text-right py-2.5 px-3">
+                          <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded-lg border-2 ${
+                            node.quality >= 95 ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
+                            node.quality >= 80 ? 'bg-amber-50 text-amber-700 border-amber-300' : 'bg-red-50 text-red-700 border-red-300'
                           }`}>
                             {node.quality.toFixed(0)}%
                           </span>
                         </td>
-                        <td className="text-right py-2 px-3 font-mono text-slate-600">
+                        <td className="text-right py-2.5 px-3 font-mono font-bold text-slate-600">
                           {formatTime(node.processingTime)}
                         </td>
                       </tr>
@@ -738,9 +734,9 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onClose }) => {
                   </tbody>
                 </table>
               </div>
-              <p className="text-xs text-slate-400 mt-3">
+              <div className="px-4 py-2 bg-slate-50 border-t border-slate-200 text-xs text-slate-400">
                 High queue lengths and utilization over 80% may indicate bottlenecks.
-              </p>
+              </div>
             </div>
           )}
 

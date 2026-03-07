@@ -24,7 +24,7 @@ import ProcessGallery from './components/ProcessGallery';
 import ShareProcessModal from './components/ShareProcessModal';
 import ToastContainer from './components/Toast';
 import SunMoonCycle from './components/SunMoonCycle';
-import Onboarding, { shouldShowOnboarding } from './components/Onboarding';
+import Onboarding from './components/Onboarding';
 import ErrorBoundary from './components/ErrorBoundary';
 import DebugOverlay from './components/DebugOverlay';
 import { computeLeadMetrics } from './metrics';
@@ -494,7 +494,7 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(() => !effectiveReadOnlyMode && shouldShowOnboarding);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [showModelPrimer, setShowModelPrimer] = useState(
     () => !effectiveReadOnlyMode && !localStorage.getItem(MODEL_PRIMER_KEY),
   );
