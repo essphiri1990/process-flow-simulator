@@ -214,6 +214,95 @@ const setupDeterministicQualityFlow = (seed: number) => {
   });
 };
 
+const setupPullFlow = () => {
+  useStore.getState().clearCanvas();
+
+  useStore.setState({
+    nodes: [
+      {
+        id: 'upstream',
+        type: 'processNode',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Upstream',
+          processingTime: 1,
+          resources: 1,
+          batchSize: 1,
+          flowMode: 'push',
+          pullOpenSlotsRequired: 1,
+          quality: 1.0,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+      {
+        id: 'downstream',
+        type: 'processNode',
+        position: { x: 200, y: 0 },
+        data: {
+          label: 'Downstream',
+          processingTime: 4,
+          resources: 1,
+          batchSize: 1,
+          flowMode: 'pull',
+          pullOpenSlotsRequired: 1,
+          quality: 1.0,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+      {
+        id: 'end-1',
+        type: 'endNode',
+        position: { x: 400, y: 0 },
+        data: {
+          label: 'End',
+          processingTime: 0,
+          resources: 999,
+          batchSize: 1,
+          flowMode: 'push',
+          pullOpenSlotsRequired: 1,
+          quality: 1.0,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+    ] as any,
+    edges: [
+      { id: 'e1', source: 'upstream', target: 'downstream', type: 'processEdge', animated: false, markerEnd: { type: 'arrowclosed' } },
+      { id: 'e2', source: 'downstream', target: 'end-1', type: 'processEdge', animated: false, markerEnd: { type: 'arrowclosed' } },
+    ],
+    items: [],
+    tickCount: 0,
+    isRunning: false,
+    cumulativeCompleted: 0,
+    throughput: 0,
+    displayTickCount: 0,
+    history: [],
+    metricsEpoch: 0,
+    metricsEpochTick: 0,
+    metricsWindowCompletions: 50,
+    demandMode: 'auto',
+    demandUnit: 'week',
+    demandTotalTicks: 2400,
+    demandArrivalsGenerated: 0,
+    demandArrivalsByNode: {},
+    demandAccumulatorByNode: {},
+    demandOpenTicksByNode: {},
+    periodCompleted: 0,
+    simulationSeed: 2024,
+    runStartedAtMs: null,
+    lastRunSummary: null,
+    lastLoggedRunKey: null,
+    itemsByNode: new Map(),
+    itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
+    autoInjectionEnabled: false,
+  });
+};
+
 const setupTargetDemandFlow = (seed = 4242) => {
   useStore.getState().clearCanvas();
 
@@ -674,6 +763,102 @@ describe('Store - Tick Engine', () => {
     }
   });
 
+  it('waits for a full batch before starting processing', () => {
+    useStore.getState().updateNodeData('proc-1', {
+      resources: 2,
+      batchSize: 2,
+      processingTime: 3,
+    });
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().tick();
+    expect(useStore.getState().items[0].status).toBe(ItemStatus.QUEUED);
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().tick();
+
+    const processing = useStore.getState().items.filter((item) => item.status === ItemStatus.PROCESSING);
+    expect(processing).toHaveLength(2);
+    expect(new Set(processing.map((item) => item.processingDuration)).size).toBe(1);
+  });
+
+  it('completes batched items together', () => {
+    useStore.getState().updateNodeData('proc-1', {
+      resources: 2,
+      batchSize: 2,
+      processingTime: 1,
+    });
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().addItem('proc-1');
+
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    const completed = useStore.getState().items.filter((item) => item.status === ItemStatus.COMPLETED);
+    expect(completed).toHaveLength(2);
+    expect(new Set(completed.map((item) => item.completionTick)).size).toBe(1);
+  });
+
+  it('holds completed work upstream until a pull node has open slots', () => {
+    setupPullFlow();
+
+    useStore.getState().addItem('upstream');
+    useStore.getState().addItem('downstream');
+
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    const blocked = useStore.getState().items.find((item) => item.currentNodeId === 'upstream');
+    expect(blocked?.status).toBe(ItemStatus.QUEUED);
+    expect(blocked?.handoffTargetNodeId).toBe('downstream');
+
+    useStore.getState().tick();
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    const released = useStore.getState().items.find((item) => item.currentNodeId === 'downstream');
+    expect(released).toBeDefined();
+    expect(released?.handoffTargetNodeId ?? null).toBeNull();
+  });
+
+  it('caps pull nodes at resource capacity and keeps overflow upstream', () => {
+    setupPullFlow();
+
+    useStore.getState().updateNodeData('upstream', {
+      resources: 6,
+      processingTime: 1,
+    });
+    useStore.getState().updateNodeData('downstream', {
+      resources: 3,
+      processingTime: 5,
+      batchSize: 3,
+      flowMode: 'pull',
+    });
+
+    for (let i = 0; i < 6; i++) {
+      useStore.getState().addItem('upstream');
+    }
+
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    const items = useStore.getState().items;
+    const downstreamQueued = items.filter(
+      (item) => item.currentNodeId === 'downstream' && item.status === ItemStatus.QUEUED
+    );
+    const downstreamProcessing = items.filter(
+      (item) => item.currentNodeId === 'downstream' && item.status === ItemStatus.PROCESSING
+    );
+    const upstreamBlocked = items.filter(
+      (item) => item.currentNodeId === 'upstream' && item.handoffTargetNodeId === 'downstream'
+    );
+
+    expect(downstreamQueued).toHaveLength(0);
+    expect(downstreamProcessing).toHaveLength(3);
+    expect(upstreamBlocked).toHaveLength(3);
+  });
+
   it('auto-injection creates items at start nodes on schedule', () => {
     useStore.setState({ autoInjectionEnabled: true });
     // Start node has sourceConfig: interval=20, batchSize=1, enabled=false
@@ -1019,6 +1204,13 @@ describe('Store - Configuration Actions', () => {
   it('setTimeUnit keeps the fixed minute time base', () => {
     useStore.getState().setTimeUnit('hours');
     expect(useStore.getState().timeUnit).toBe('minutes');
+  });
+
+  it('setShowSunMoonClock updates the visibility preference', () => {
+    useStore.getState().setShowSunMoonClock(false);
+    expect(useStore.getState().showSunMoonClock).toBe(false);
+    useStore.getState().setShowSunMoonClock(true);
+    expect(useStore.getState().showSunMoonClock).toBe(true);
   });
 
   it('setDurationPreset updates duration and recalculates progress', () => {

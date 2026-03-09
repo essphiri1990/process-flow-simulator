@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps } from 'reactflow';
 import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../types';
 import { useStore } from '../store';
 import { Play, Zap, Clock, Users, AlertTriangle, User, Box, FileText, Trash2 } from 'lucide-react';
+import { horizontalHandlePosition } from './nodeHandleLayout';
 
 const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup)
@@ -76,18 +77,18 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   // Handle styling - visible on hover/selection with larger hit areas
   const handleBaseStyle = {
-      width: '12px',
-      height: '12px',
+      width: '14px',
+      height: '14px',
       background: '#10b981', // emerald-500
       border: '2px solid white',
       zIndex: 50,
       transition: 'all 0.2s ease',
-      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+      boxShadow: '0 3px 8px rgba(15,23,42,0.18)',
   };
 
   // Show handles when selected OR hovered
   const handleVisibility = selected ? { opacity: 1 } : { opacity: 0 };
-  const handleClassName = readOnlyMode ? '' : 'group-hover:!opacity-100 hover:!scale-125';
+  const handleClassName = readOnlyMode ? 'process-flow-handle' : 'process-flow-handle group-hover:!opacity-100 hover:!scale-125';
   const handleStyle = readOnlyMode
     ? { ...handleBaseStyle, opacity: 0, pointerEvents: 'none' as const }
     : { ...handleBaseStyle, ...handleVisibility };
@@ -124,7 +125,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       ) : null}
 
       {/* Omni-Handles: Sources only - visible on hover AND when selected */}
-      <Handle type="source" position={Position.Right} id="right" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Right} id="right" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
       <Handle type="source" position={Position.Bottom} id="bottom" className={handleClassName} style={handleStyle} />
       <Handle type="source" position={Position.Left} id="left" className={handleClassName} style={handleStyle} />
       <Handle type="source" position={Position.Top} id="top" className={handleClassName} style={handleStyle} />

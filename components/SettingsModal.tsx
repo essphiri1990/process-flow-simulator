@@ -20,6 +20,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const simulationSeed = useStore((state) => state.simulationSeed);
   const setSimulationSeed = useStore((state) => state.setSimulationSeed);
   const randomizeSimulationSeed = useStore((state) => state.randomizeSimulationSeed);
+  const showSunMoonClock = useStore((state) => state.showSunMoonClock);
+  const setShowSunMoonClock = useStore((state) => state.setShowSunMoonClock);
   const nodes = useStore((state) => state.nodes);
 
   const demandTotals = useMemo(() => {
@@ -190,6 +192,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               <p className="text-xs text-slate-500 mt-1">
                 Run Time = observation window. Working = queue + processing. Elapsed = spawn to completion.
               </p>
+            </div>
+
+            <div className="mt-3 bg-white border border-slate-200 rounded-xl p-3 flex items-center justify-between gap-3">
+              <div>
+                <label className="text-xs text-slate-400 font-bold mb-1 block">Sun / moon clock</label>
+                <p className="text-xs text-slate-500">Show or hide the day/night progress artwork in the top-right corner.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSunMoonClock(!showSunMoonClock)}
+                className={`inline-flex h-7 w-14 items-center rounded-full border transition ${
+                  showSunMoonClock
+                    ? 'border-blue-500 bg-blue-500 justify-end'
+                    : 'border-slate-300 bg-slate-200 justify-start'
+                }`}
+                aria-pressed={showSunMoonClock}
+              >
+                <span className="mx-1 h-5 w-5 rounded-full bg-white shadow-sm" />
+              </button>
             </div>
           </div>
 

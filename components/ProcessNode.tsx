@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps } from 'reactflow';
 import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../types';
 import { useStore } from '../store';
 import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2 } from 'lucide-react';
+import { horizontalHandlePosition } from './nodeHandleLayout';
 
 const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup instead of O(n) filter)
@@ -13,6 +14,8 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const readOnlyMode = useStore((state) => state.readOnlyMode);
   const timeUnit = useStore((state) => state.timeUnit);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
+  const batchSize = Math.max(1, data.batchSize || 1);
+  const flowMode = data.flowMode === 'pull' ? 'pull' : 'push';
 
   // Separate queued and processing in single pass
   const queuedItems: typeof items = [];
@@ -104,18 +107,18 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   // Handle styling - visible on hover/selection with larger hit areas
   const handleBaseStyle = {
-      width: '12px',
-      height: '12px',
+      width: '14px',
+      height: '14px',
       background: '#3b82f6',
       border: '2px solid white',
       zIndex: 50,
       transition: 'all 0.2s ease',
-      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+      boxShadow: '0 3px 8px rgba(15,23,42,0.18)',
   };
 
   // Show handles when selected OR hovered
   const handleVisibility = selected ? { opacity: 1 } : { opacity: 0 };
-  const handleClassName = readOnlyMode ? '' : 'group-hover:!opacity-100 hover:!scale-125';
+  const handleClassName = readOnlyMode ? 'process-flow-handle' : 'process-flow-handle group-hover:!opacity-100 hover:!scale-125';
   const handleStyle = readOnlyMode
     ? { ...handleBaseStyle, opacity: 0, pointerEvents: 'none' as const }
     : { ...handleBaseStyle, ...handleVisibility };
@@ -151,16 +154,16 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       {/* Handles are visible on hover AND when selected for better discoverability */}
 
       {/* Left */}
-      <Handle type="target" position={Position.Left} id="left-target" className={handleClassName} style={handleStyle} />
-      <Handle type="source" position={Position.Left} id="left-source" className={handleClassName} style={handleStyle} />
+      <Handle type="target" position={Position.Left} id="left-target" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
+      <Handle type="source" position={Position.Left} id="left-source" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
 
       {/* Top */}
       <Handle type="target" position={Position.Top} id="top-target" className={handleClassName} style={handleStyle} />
       <Handle type="source" position={Position.Top} id="top-source" className={handleClassName} style={handleStyle} />
 
       {/* Right */}
-      <Handle type="target" position={Position.Right} id="right-target" className={handleClassName} style={handleStyle} />
-      <Handle type="source" position={Position.Right} id="right-source" className={handleClassName} style={handleStyle} />
+      <Handle type="target" position={Position.Right} id="right-target" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
+      <Handle type="source" position={Position.Right} id="right-source" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
 
       {/* Bottom */}
       <Handle type="target" position={Position.Bottom} id="bottom-target" className={handleClassName} style={handleStyle} />
@@ -195,6 +198,20 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                           <Clock size={10} className="text-amber-500" /> Wait {formatWaitTime(avgWaitTime)}
                         </span>
                     </div>
+                    {((batchSize > 1 && flowMode !== 'pull') || flowMode === 'pull') && (
+                      <div className="flex gap-2 mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        {batchSize > 1 && flowMode !== 'pull' && (
+                          <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-slate-600">
+                            Batch {batchSize}
+                          </span>
+                        )}
+                        {flowMode === 'pull' && (
+                          <span className="rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-blue-700">
+                            Pull cap {data.resources}
+                          </span>
+                        )}
+                      </div>
+                    )}
                 </div>
              </div>
              {data.stats.failed > 0 && (

@@ -11,6 +11,7 @@ export interface ProcessItem {
   id: string;
   currentNodeId: string | null;
   status: ItemStatus;
+  handoffTargetNodeId?: string | null; // Next node waiting to accept the item after processing
   progress: number; // 0 to 100
   remainingTime: number; // in ticks
   processingDuration: number; // Snapshot of the total duration assigned to this item
@@ -48,6 +49,8 @@ export interface WorkingHoursConfig {
   daysPerWeek: number; // 0-5 (workweek days)
 }
 
+export type FlowMode = 'push' | 'pull';
+
 export const DEFAULT_WORKING_HOURS: WorkingHoursConfig = {
   enabled: true,
   hoursPerDay: 8,
@@ -58,6 +61,9 @@ export interface ProcessNodeData {
   label: string;
   processingTime: number; // Time to process one item (in ticks)
   resources: number; // Concurrent capacity
+  batchSize?: number; // Items that must begin together when this node batches work
+  flowMode?: FlowMode; // Push accepts immediately; pull caps local WIP at resources and blocks upstream overflow
+  pullOpenSlotsRequired?: number; // Legacy saved setting retained for compatibility; pull now uses resource count as its cap
   quality: number; // 0.0 to 1.0 (pass rate)
   variability: number; // 0.0 to 1.0 - how much processing time varies (0 = fixed, 1 = +/- 100%)
   stats: NodeStats;
@@ -396,6 +402,7 @@ export interface SimulationState {
   simulationProgress: number; // 0 to 100
   autoStopEnabled: boolean; // Stop when targetDuration reached
   simulationSeed: number;
+  showSunMoonClock: boolean;
   readOnlyMode: boolean;
   runStartedAtMs: number | null;
   lastRunSummary: RunSummary | null;
@@ -428,6 +435,7 @@ export interface SimulationState {
   setAutoStop: (enabled: boolean) => void;
   setSimulationSeed: (seed: number) => void;
   randomizeSimulationSeed: () => void;
+  setShowSunMoonClock: (enabled: boolean) => void;
   setReadOnlyMode: (enabled: boolean) => void;
 
   // Simulation Actions

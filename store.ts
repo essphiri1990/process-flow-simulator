@@ -78,7 +78,11 @@ const nextSimulationRandom = () => {
 };
 
 const DEFAULT_SOURCE_CONFIG = { enabled: false, interval: 20, batchSize: 1 };
+const DEFAULT_NODE_BATCH_SIZE = 1;
+const DEFAULT_NODE_FLOW_MODE = 'push' as const;
+const DEFAULT_PULL_OPEN_SLOTS_REQUIRED = 1;
 const MAX_VISUAL_TRANSFERS = 120;
+const SUN_MOON_CLOCK_PREF_KEY = 'pf-show-sun-moon-clock';
 const createDefaultWorkingHours = (): WorkingHoursConfig => ({ ...DEFAULT_WORKING_HOURS });
 const createEmptyItemCounts = () => ({
   wip: 0,
@@ -89,10 +93,66 @@ const createEmptyItemCounts = () => ({
   stuck: 0,
 });
 
+const readShowSunMoonClockPreference = () => {
+  if (typeof window === 'undefined') return true;
+  try {
+    const raw = window.localStorage.getItem(SUN_MOON_CLOCK_PREF_KEY);
+    if (raw === null) return true;
+    return raw !== '0';
+  } catch {
+    return true;
+  }
+};
+
+const persistShowSunMoonClockPreference = (enabled: boolean) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SUN_MOON_CLOCK_PREF_KEY, enabled ? '1' : '0');
+  } catch {
+    // ignore local preference write failures
+  }
+};
+
+const getNodeBatchSize = (data: Partial<ProcessNodeData> | undefined) => {
+  const raw = Number(data?.batchSize);
+  return Number.isFinite(raw) && raw >= 1 ? Math.round(raw) : DEFAULT_NODE_BATCH_SIZE;
+};
+
+const getNodeFlowMode = (data: Partial<ProcessNodeData> | undefined) =>
+  data?.flowMode === 'pull' ? 'pull' : DEFAULT_NODE_FLOW_MODE;
+
+const getNodePullOpenSlotsRequired = (data: Partial<ProcessNodeData> | undefined) => {
+  const raw = Number(data?.pullOpenSlotsRequired);
+  return Number.isFinite(raw) && raw >= 1 ? Math.round(raw) : DEFAULT_PULL_OPEN_SLOTS_REQUIRED;
+};
+
+const normalizeProcessNodeSettings = (
+  nextData: Partial<ProcessNodeData>,
+  fallback?: Partial<ProcessNodeData>
+): Partial<ProcessNodeData> => {
+  const merged = { ...fallback, ...nextData };
+  const resources = Number(merged.resources);
+  const normalizedResources = Number.isFinite(resources) && resources > 0 ? Math.round(resources) : fallback?.resources;
+  const maxSlots = Number.isFinite(normalizedResources) && normalizedResources && normalizedResources > 0
+    ? Math.round(normalizedResources)
+    : undefined;
+
+  const batchSize = getNodeBatchSize(merged);
+  const pullOpenSlotsRequired = getNodePullOpenSlotsRequired(merged);
+
+  return {
+    ...nextData,
+    batchSize: maxSlots ? Math.min(batchSize, maxSlots) : batchSize,
+    flowMode: getNodeFlowMode(merged),
+    pullOpenSlotsRequired: maxSlots ? Math.min(pullOpenSlotsRequired, maxSlots) : pullOpenSlotsRequired,
+  };
+};
+
 const createQueuedItem = (targetNodeId: string, tick: number, metricsEpoch: number): ProcessItem => ({
   id: generateId(),
   currentNodeId: targetNodeId,
   status: ItemStatus.QUEUED,
+  handoffTargetNodeId: null,
   progress: 0,
   remainingTime: 0,
   processingDuration: 0,
@@ -170,6 +230,14 @@ const shouldResetMetricsForNodeData = (
   if ('resources' in nextPartial && nextPartial.resources !== prev.resources) return true;
   if ('quality' in nextPartial && nextPartial.quality !== prev.quality) return true;
   if ('variability' in nextPartial && nextPartial.variability !== prev.variability) return true;
+  if ('batchSize' in nextPartial && getNodeBatchSize(nextPartial as Partial<ProcessNodeData>) !== getNodeBatchSize(prev)) return true;
+  if ('flowMode' in nextPartial && getNodeFlowMode(nextPartial as Partial<ProcessNodeData>) !== getNodeFlowMode(prev)) return true;
+  if (
+    'pullOpenSlotsRequired' in nextPartial &&
+    getNodePullOpenSlotsRequired(nextPartial as Partial<ProcessNodeData>) !== getNodePullOpenSlotsRequired(prev)
+  ) {
+    return true;
+  }
   if ('demandTarget' in nextPartial && nextPartial.demandTarget !== prev.demandTarget) return true;
   if ('workingHours' in nextPartial) {
     const nextWorking = nextPartial.workingHours
@@ -692,6 +760,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   simulationProgress: 0,
   autoStopEnabled: true,
   simulationSeed: DEFAULT_SIMULATION_SEED,
+  showSunMoonClock: readShowSunMoonClockPreference(),
   readOnlyMode: false,
   runStartedAtMs: null,
   lastRunSummary: null,
@@ -803,6 +872,11 @@ export const useStore = create<SimulationState>((set, get) => ({
     set({ simulationSeed });
   },
 
+  setShowSunMoonClock: (enabled: boolean) => {
+    persistShowSunMoonClockPreference(Boolean(enabled));
+    set({ showSunMoonClock: Boolean(enabled) });
+  },
+
   setReadOnlyMode: (enabled: boolean) => set({ readOnlyMode: Boolean(enabled) }),
 
   onNodesChange: (changes: NodeChange[]) => {
@@ -897,6 +971,9 @@ export const useStore = create<SimulationState>((set, get) => ({
         label: `Station ${get().nodes.filter(n => n.type === 'processNode').length + 1}`,
         processingTime: 10,
         resources: 1,
+        batchSize: DEFAULT_NODE_BATCH_SIZE,
+        flowMode: DEFAULT_NODE_FLOW_MODE,
+        pullOpenSlotsRequired: DEFAULT_PULL_OPEN_SLOTS_REQUIRED,
         quality: 1.0,
         variability: 0,
         stats: { processed: 0, failed: 0, maxQueue: 0 },
@@ -919,6 +996,9 @@ export const useStore = create<SimulationState>((set, get) => ({
           label: 'Start',
           processingTime: 2,
           resources: 1,
+          batchSize: DEFAULT_NODE_BATCH_SIZE,
+          flowMode: DEFAULT_NODE_FLOW_MODE,
+          pullOpenSlotsRequired: DEFAULT_PULL_OPEN_SLOTS_REQUIRED,
           quality: 1.0,
           variability: 0,
           stats: { processed: 0, failed: 0, maxQueue: 0 },
@@ -942,6 +1022,9 @@ export const useStore = create<SimulationState>((set, get) => ({
           label: 'End',
           processingTime: 0, // Instant
           resources: 999, // Infinite capacity
+          batchSize: DEFAULT_NODE_BATCH_SIZE,
+          flowMode: DEFAULT_NODE_FLOW_MODE,
+          pullOpenSlotsRequired: DEFAULT_PULL_OPEN_SLOTS_REQUIRED,
           quality: 1.0,
           variability: 0,
           stats: { processed: 0, failed: 0, maxQueue: 0 },
@@ -972,10 +1055,17 @@ export const useStore = create<SimulationState>((set, get) => ({
     set((state) => {
       const prevNode = state.nodes.find((node) => node.id === id);
       const isProcessNode = prevNode && (prevNode.type === 'processNode' || prevNode.type === 'startNode' || prevNode.type === 'endNode');
-      const shouldReset = !!(isProcessNode && prevNode && shouldResetMetricsForNodeData(prevNode.data as ProcessNodeData, data as Partial<ProcessNodeData>));
+      const nextData = isProcessNode && prevNode
+        ? normalizeProcessNodeSettings(data as Partial<ProcessNodeData>, prevNode.data as ProcessNodeData)
+        : data;
+      const shouldReset = !!(
+        isProcessNode &&
+        prevNode &&
+        shouldResetMetricsForNodeData(prevNode.data as ProcessNodeData, nextData as Partial<ProcessNodeData>)
+      );
 
       const nextNodes = state.nodes.map((node) =>
-        node.id === id ? { ...node, data: { ...node.data, ...data } } : node
+        node.id === id ? { ...node, data: { ...node.data, ...nextData } } : node
       );
 
       if (!shouldReset) {
@@ -1663,6 +1753,16 @@ export const useStore = create<SimulationState>((set, get) => ({
 
       // Combine items (reuse array if no injections)
       const allItems = injectedItems.length > 0 ? [...items, ...injectedItems] : items;
+      const activeWipCounts = new Map<string, number>();
+      for (const item of allItems) {
+        if (
+          item.currentNodeId &&
+          item.status !== ItemStatus.COMPLETED &&
+          item.status !== ItemStatus.FAILED
+        ) {
+          activeWipCounts.set(item.currentNodeId, (activeWipCounts.get(item.currentNodeId) || 0) + 1);
+        }
+      }
 
       // --- SINGLE PASS: Process all items and collect stats ---
       const nodesUpdates = new Map<string, { processed: number; failed: number }>();
@@ -1685,6 +1785,41 @@ export const useStore = create<SimulationState>((set, get) => ({
           durationMs: getVisualTransferDurationMs(ticksPerSecond),
         };
         pendingVisualTransfers.push(transfer);
+      };
+
+      const canAcceptTransfer = (targetNodeId: string) => {
+        const targetNode = nodeMap.get(targetNodeId);
+        if (!targetNode || targetNode.type === 'annotationNode') return false;
+        if (targetNode.type === 'endNode') return true;
+
+        const targetData = targetNode.data as ProcessNodeData;
+        if (getNodeFlowMode(targetData) !== 'pull') return true;
+
+        const localCapacity = Math.max(1, targetData.resources);
+        const localWip = activeWipCounts.get(targetNodeId) || 0;
+        return localWip < localCapacity;
+      };
+
+      const moveItemToQueuedNode = (item: ProcessItem, targetNodeId: string) => {
+        item.status = ItemStatus.QUEUED;
+        item.currentNodeId = targetNodeId;
+        item.handoffTargetNodeId = null;
+        item.remainingTime = 0;
+        item.processingDuration = 0;
+        item.progress = 0;
+        item.nodeEnterTick = tickCount;
+        item.nodeLeadTime = 0;
+        item.terminalNodeId = null;
+      };
+
+      const blockItemAtSource = (item: ProcessItem, sourceNodeId: string, targetNodeId: string) => {
+        item.status = ItemStatus.QUEUED;
+        item.currentNodeId = sourceNodeId;
+        item.handoffTargetNodeId = targetNodeId;
+        item.remainingTime = 0;
+        item.processingDuration = 0;
+        item.progress = 100;
+        item.terminalNodeId = null;
       };
 
       // Initialize processing counts
@@ -1746,26 +1881,29 @@ export const useStore = create<SimulationState>((set, get) => ({
                 const sourceNodeId = node.id;
                 const nextNodeId = getNextNode(node.id, pData.routingWeights);
                 if (nextNodeId) {
-                  enqueueVisualTransfer(sourceNodeId, nextNodeId);
-                  item.status = ItemStatus.QUEUED;
-                  item.currentNodeId = nextNodeId;
-                  item.remainingTime = 0;
-                  item.processingDuration = 0;
-                  item.progress = 0;
-                  item.nodeEnterTick = tickCount;
-                  item.nodeLeadTime = 0;
-                  item.terminalNodeId = null;
+                  if (canAcceptTransfer(nextNodeId)) {
+                    activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
+                    activeWipCounts.set(nextNodeId, (activeWipCounts.get(nextNodeId) || 0) + 1);
+                    enqueueVisualTransfer(sourceNodeId, nextNodeId);
+                    moveItemToQueuedNode(item, nextNodeId);
+                  } else {
+                    blockItemAtSource(item, sourceNodeId, nextNodeId);
+                  }
                 } else {
+                  activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
                   item.status = ItemStatus.COMPLETED;
                   item.currentNodeId = null;
+                  item.handoffTargetNodeId = null;
                   item.progress = 100;
                   item.completionTick = tickCount;
                   item.terminalNodeId = node.type === 'endNode' ? node.id : null;
                   registerCompletion(item);
                 }
               } else {
+                activeWipCounts.set(node.id, Math.max(0, (activeWipCounts.get(node.id) || 0) - 1));
                 item.status = ItemStatus.FAILED;
                 item.currentNodeId = null;
+                item.handoffTargetNodeId = null;
                 item.completionTick = tickCount;
                 item.terminalNodeId = null;
               }
@@ -1775,6 +1913,26 @@ export const useStore = create<SimulationState>((set, get) => ({
         // Note: already-completed items are pre-counted above, not here
       }
 
+      const blockedItems = allItems
+        .filter(
+          (item) =>
+            item.status === ItemStatus.QUEUED &&
+            item.currentNodeId &&
+            item.handoffTargetNodeId
+        )
+        .sort((left, right) => left.nodeEnterTick - right.nodeEnterTick);
+
+      for (const item of blockedItems) {
+        const sourceNodeId = item.currentNodeId!;
+        const targetNodeId = item.handoffTargetNodeId!;
+        if (!canAcceptTransfer(targetNodeId)) continue;
+
+        activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
+        activeWipCounts.set(targetNodeId, (activeWipCounts.get(targetNodeId) || 0) + 1);
+        enqueueVisualTransfer(sourceNodeId, targetNodeId);
+        moveItemToQueuedNode(item, targetNodeId);
+      }
+
       // Count current processing items
       for (const item of allItems) {
         if (item.status === ItemStatus.PROCESSING && item.currentNodeId) {
@@ -1782,68 +1940,97 @@ export const useStore = create<SimulationState>((set, get) => ({
         }
       }
 
-      // Assign queued items to free slots
+      const queuedByNode = new Map<string, ProcessItem[]>();
       for (const item of allItems) {
-        if (item.status === ItemStatus.QUEUED && item.currentNodeId) {
-          const node = nodeMap.get(item.currentNodeId);
-          if (node && node.type !== 'annotationNode') {
-            const pData = node.data as ProcessNodeData;
-            const isWorking = workingStatus.get(node.id) ?? true;
-            if (!isWorking) continue;
-            const currentLoad = processingCounts.get(node.id) || 0;
+        if (item.status !== ItemStatus.QUEUED || !item.currentNodeId || item.handoffTargetNodeId) continue;
+        const existing = queuedByNode.get(item.currentNodeId);
+        if (existing) {
+          existing.push(item);
+        } else {
+          queuedByNode.set(item.currentNodeId, [item]);
+        }
+      }
+      for (const queueItems of queuedByNode.values()) {
+        queueItems.sort((left, right) => left.nodeEnterTick - right.nodeEnterTick);
+      }
 
-            if (currentLoad < pData.resources) {
-              processingCounts.set(node.id, currentLoad + 1);
+      for (const node of nodes) {
+        if (node.type === 'annotationNode') continue;
+        const queueItems = queuedByNode.get(node.id);
+        if (!queueItems || queueItems.length === 0) continue;
 
-              if (pData.processingTime === 0) {
-                // Instant processing - still apply quality check
-                const passed = nextSimulationRandom() <= pData.quality;
-                const stats = nodesUpdates.get(node.id) || { processed: 0, failed: 0 };
+        const pData = node.data as ProcessNodeData;
+        const isWorking = workingStatus.get(node.id) ?? true;
+        if (!isWorking) continue;
 
-                if (passed) {
-                  // Check for next node to route to
-                  const sourceNodeId = node.id;
-                  const nextNodeId = getNextNode(node.id, pData.routingWeights);
-                  if (nextNodeId) {
+        const batchSize =
+          node.type === 'processNode'
+            ? (getNodeFlowMode(pData) === 'pull'
+              ? 1
+              : Math.min(getNodeBatchSize(pData), Math.max(1, pData.resources)))
+            : 1;
+
+        let currentLoad = processingCounts.get(node.id) || 0;
+        while (queueItems.length >= batchSize && currentLoad + batchSize <= pData.resources) {
+          const batch = queueItems.splice(0, batchSize);
+          currentLoad += batchSize;
+          processingCounts.set(node.id, currentLoad);
+
+          if (pData.processingTime === 0) {
+            for (const item of batch) {
+              const passed = nextSimulationRandom() <= pData.quality;
+              const stats = nodesUpdates.get(node.id) || { processed: 0, failed: 0 };
+
+              if (passed) {
+                const sourceNodeId = node.id;
+                const nextNodeId = getNextNode(node.id, pData.routingWeights);
+                if (nextNodeId) {
+                  if (canAcceptTransfer(nextNodeId)) {
+                    activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
+                    activeWipCounts.set(nextNodeId, (activeWipCounts.get(nextNodeId) || 0) + 1);
                     enqueueVisualTransfer(sourceNodeId, nextNodeId);
-                    item.status = ItemStatus.QUEUED;
-                    item.currentNodeId = nextNodeId;
-                    item.remainingTime = 0;
-                    item.processingDuration = 0;
-                    item.progress = 0;
-                    item.nodeEnterTick = tickCount;
-                    item.nodeLeadTime = 0;
-                    item.terminalNodeId = null;
+                    moveItemToQueuedNode(item, nextNodeId);
                   } else {
-                    item.status = ItemStatus.COMPLETED;
-                    item.currentNodeId = null;
-                    item.completionTick = tickCount;
-                    item.terminalNodeId = node.type === 'endNode' ? node.id : null;
-                    registerCompletion(item);
+                    blockItemAtSource(item, sourceNodeId, nextNodeId);
                   }
-                  item.progress = 100;
-                  stats.processed++;
                 } else {
-                  item.status = ItemStatus.FAILED;
+                  activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
+                  item.status = ItemStatus.COMPLETED;
                   item.currentNodeId = null;
+                  item.handoffTargetNodeId = null;
                   item.completionTick = tickCount;
-                  item.terminalNodeId = null;
-                  item.progress = 100;
-                  stats.failed++;
+                  item.terminalNodeId = node.type === 'endNode' ? node.id : null;
+                  registerCompletion(item);
                 }
-                nodesUpdates.set(node.id, stats);
+                item.progress = 100;
+                stats.processed++;
               } else {
-                const actualTime = applyVariability(
-                  pData.processingTime,
-                  pData.variability || 0,
-                  nextSimulationRandom
-                );
-                item.status = ItemStatus.PROCESSING;
-                item.remainingTime = actualTime;
-                item.processingDuration = actualTime;
-                item.progress = 0;
+                activeWipCounts.set(node.id, Math.max(0, (activeWipCounts.get(node.id) || 0) - 1));
+                item.status = ItemStatus.FAILED;
+                item.currentNodeId = null;
+                item.handoffTargetNodeId = null;
+                item.completionTick = tickCount;
+                item.terminalNodeId = null;
+                item.progress = 100;
+                stats.failed++;
               }
+              nodesUpdates.set(node.id, stats);
             }
+            continue;
+          }
+
+          const actualTime = applyVariability(
+            pData.processingTime,
+            pData.variability || 0,
+            nextSimulationRandom
+          );
+
+          for (const item of batch) {
+            item.status = ItemStatus.PROCESSING;
+            item.handoffTargetNodeId = null;
+            item.remainingTime = actualTime;
+            item.processingDuration = actualTime;
+            item.progress = 0;
           }
         }
       }
@@ -1886,6 +2073,9 @@ export const useStore = create<SimulationState>((set, get) => ({
             }
             if (pData.resources === 0) {
               validationError = 'Zero Capacity';
+            }
+            if (n.type === 'processNode' && getNodeBatchSize(pData) > Math.max(1, pData.resources)) {
+              validationError = 'Batch > Capacity';
             }
           }
 

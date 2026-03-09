@@ -64,6 +64,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
 
   // Source config (init if undefined)
   const sourceConfig = data.sourceConfig || { enabled: false, interval: 20, batchSize: 1 };
+  const batchSize = Math.max(1, Math.min(data.batchSize || 1, Math.max(1, data.resources || 1)));
+  const flowMode = data.flowMode === 'pull' ? 'pull' : 'push';
 
   const handleWeightChange = (targetId: string, value: number) => {
     const newWeights = { ...currentWeights, [targetId]: value };
@@ -328,6 +330,77 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
             />
             <p className="text-xs text-slate-400">Number of items that can be processed simultaneously.</p>
             </div>
+        )}
+
+        {isStandardNode && (
+          <div className="bg-violet-50 rounded-xl p-4 border border-violet-100 space-y-3">
+            <div className="flex items-center gap-2 text-violet-800">
+              <Zap size={16} />
+              <span className="text-sm font-bold">Batch Processing</span>
+            </div>
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-600">Batch Size</span>
+                <span className="font-bold text-violet-700">{batchSize}</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max={Math.max(1, data.resources)}
+                step="1"
+                disabled={flowMode === 'pull'}
+                className="w-full h-1.5 bg-violet-200 rounded-lg appearance-none cursor-pointer accent-violet-600 disabled:cursor-not-allowed disabled:opacity-50"
+                value={batchSize}
+                onChange={(e) => handleChange('batchSize', parseInt(e.target.value, 10))}
+              />
+              <p className="text-xs text-slate-500">
+                {flowMode === 'pull'
+                  ? 'Pull mode disables local queueing, so batching is paused until you switch back to push.'
+                  : 'The node waits for this many queued items before starting them together. `1` keeps the current one-by-one behavior.'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {!isEndNode && (
+          <div className="bg-blue-50 rounded-xl p-4 border border-blue-100 space-y-3">
+            <div className="flex items-center gap-2 text-blue-800">
+              <Split size={16} />
+              <span className="text-sm font-bold">Flow Control</span>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => handleChange('flowMode', 'push')}
+                className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                  flowMode === 'push'
+                    ? 'bg-slate-800 border-slate-800 text-white'
+                    : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                }`}
+              >
+                Push
+              </button>
+              <button
+                type="button"
+                onClick={() => handleChange('flowMode', 'pull')}
+                className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                  flowMode === 'pull'
+                    ? 'bg-blue-600 border-blue-600 text-white'
+                    : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                }`}
+              >
+                Pull
+              </button>
+            </div>
+
+            {flowMode === 'pull' && (
+              <div className="rounded-lg border border-blue-200 bg-white/70 px-3 py-2 text-xs text-slate-600">
+                This node can hold up to <span className="font-bold text-blue-700">{data.resources}</span> active items, matching its resource count.
+                Extra work stays upstream until a slot opens, so no local queue forms here.
+              </div>
+            )}
+          </div>
         )}
 
         {/* Quality (Hide for EndNode) */}

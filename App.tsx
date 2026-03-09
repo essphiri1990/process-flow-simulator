@@ -33,7 +33,7 @@ import { shouldRenderProcessFlowSessionPanel } from './sessionSupport';
 import { getLastCanvasId } from './canvas-storage';
 import { CanvasMetadata } from './types';
 
-import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X } from 'lucide-react';
+import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X, CloudSun } from 'lucide-react';
 
 const nodeTypes = {
   processNode: ProcessNode,
@@ -482,6 +482,8 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
   } = useStore();
   const readOnlyMode = useStore((state) => state.readOnlyMode);
   const lastRunSummary = useStore((state) => state.lastRunSummary);
+  const showSunMoonClock = useStore((state) => state.showSunMoonClock);
+  const setShowSunMoonClock = useStore((state) => state.setShowSunMoonClock);
   const effectiveReadOnlyMode = viewerMode || readOnlyMode;
 
   // Edge reconnection ref to track the edge being updated
@@ -704,19 +706,23 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
 
       <button
         onClick={() => setShowHelp(!showHelp)}
-        className={`absolute top-3 right-3 z-10 p-2 rounded-lg transition ${
-          showHelp ? 'bg-blue-100 text-blue-600' : 'bg-white/80 text-slate-500 hover:bg-white hover:text-slate-700'
-        } border border-slate-200 shadow-sm`}
+        className={`fixed top-3 z-30 p-2 rounded-xl transition ${
+          showHelp ? 'bg-blue-100 text-blue-600' : 'bg-white/90 text-slate-500 hover:bg-white hover:text-slate-700'
+        } border border-slate-200 shadow-md backdrop-blur-md`}
+        style={{ left: onBackToGallery && !effectiveReadOnlyMode ? 168 : 68 }}
         title="Toggle Help"
       >
-        <Info size={16} />
+        <Info size={15} />
       </button>
 
       {!effectiveReadOnlyMode ? <ProcessFlowSessionPanel /> : null}
 
       {/* Help Panel (Collapsible) */}
       {showHelp && (
-        <div className="absolute top-12 right-3 z-10 bg-white/95 backdrop-blur p-3 rounded-xl border border-slate-200 shadow-lg text-xs text-slate-500 max-w-xs animate-in fade-in slide-in-from-right-2 duration-200">
+        <div
+          className="fixed top-14 z-30 bg-white/95 backdrop-blur p-3 rounded-xl border border-slate-200 shadow-lg text-xs text-slate-500 max-w-xs animate-in fade-in slide-in-from-left-2 duration-200"
+          style={{ left: onBackToGallery && !effectiveReadOnlyMode ? 168 : 68 }}
+        >
           <h4 className="font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
             <MousePointer2 size={12} />
             Quick Guide
@@ -766,9 +772,32 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
       )}
 
       {/* Sun/Moon Cycle */}
-      <div className="absolute top-0 right-0 z-10 pointer-events-none">
-        <SunMoonCycle />
-      </div>
+      {showSunMoonClock && (
+        <div className="absolute top-0 right-0 z-10">
+          <div className="pointer-events-none">
+            <SunMoonCycle />
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowSunMoonClock(false)}
+            className="absolute top-2 right-2 pointer-events-auto flex items-center gap-1.5 rounded-full bg-black/20 px-2.5 py-1.5 text-[11px] font-medium text-white/90 backdrop-blur-sm transition hover:bg-black/35 hover:text-white"
+            title="Hide sun / moon clock"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {!showSunMoonClock && (
+        <button
+          type="button"
+          onClick={() => setShowSunMoonClock(true)}
+          className="absolute top-3 right-14 z-10 flex items-center gap-1.5 rounded-full border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-3 py-1.5 text-xs font-medium text-amber-700 shadow-sm transition hover:from-amber-100 hover:to-orange-100 hover:shadow-md"
+          title="Show sun / moon clock"
+        >
+          <CloudSun size={14} />
+        </button>
+      )}
 
       {/* Main Canvas */}
       <div className="absolute inset-0">
@@ -802,6 +831,7 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
           deleteKeyCode={effectiveReadOnlyMode ? null : ['Backspace', 'Delete']}
           connectionLineType={ConnectionLineType.SmoothStep}
           connectionLineStyle={{ stroke: '#3b82f6', strokeWidth: 2, strokeDasharray: '5 5' }}
+          connectionRadius={30}
           className="bg-slate-50"
         >
           <Background color="#cbd5e1" gap={20} size={1} />
