@@ -3,7 +3,12 @@ import { useStore } from '../store';
 import { DURATION_PRESETS, SPEED_PRESETS, TICKS_PER_HOUR, TICKS_PER_WORKDAY, TICKS_PER_WEEK } from '../types';
 import { Play, Pause, RotateCcw, Plus, Activity, Settings2, Zap, ZapOff, SkipForward, ChevronDown } from 'lucide-react';
 import { computeSchedule } from '../scheduler';
-import { computeLeadMetrics, formatCompletionWindowLabel } from '../metrics';
+import {
+  computeLeadMetrics,
+  formatCompletionWindowLabel,
+  getLatestKpiUtilizationAverage,
+} from '../metrics';
+import { computeOverallLiveUtilization } from '../capacityModel';
 
 interface ControlsProps {
   selectedNodeId: string | null;
@@ -30,22 +35,6 @@ const formatElapsedTime = (ticks: number): string => {
   }
 };
 
-// Format total duration from preset
-const formatTotalTime = (preset: string): string => {
-  const config = DURATION_PRESETS[preset];
-  if (!config || config.totalTicks === Infinity) return '∞';
-
-  switch (preset) {
-    case '1hour': return '1h';
-    case '1day': return '8h';
-    case '1week': return '5d';
-    case '1month': return '22d';
-    case '3months': return '66d';
-    case '12months': return '264d';
-    default: return '∞';
-  }
-};
-
 const METRICS_WINDOW_PRESETS = [
   { label: '10', count: 10 },
   { label: '25', count: 25 },
@@ -66,22 +55,27 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
     metricsEpoch,
     metricsWindowCompletions,
     demandMode,
+    demandUnit,
     itemCounts,
     autoInjectionEnabled,
     toggleAutoInjection,
     // New real-time simulation state
     durationPreset,
-    targetDuration,
     speedPreset,
     ticksPerSecond,
-    simulationProgress,
     readOnlyMode,
     setDurationPreset,
     setMetricsWindowCompletions,
-    setSpeedPreset
+    setSpeedPreset,
   } = useStore();
 
   const items = useStore((state) => state.items);
+  const nodes = useStore((state) => state.nodes);
+  const itemsByNode = useStore((state) => state.itemsByNode);
+  const kpiHistoryByPeriod = useStore((state) => state.kpiHistoryByPeriod);
+  const capacityMode = useStore((state) => state.capacityMode);
+  const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
+  const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
 
   const vsmMetrics = useMemo(() => {
     return computeLeadMetrics(items, {
@@ -91,21 +85,17 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
   }, [items, metricsWindowCompletions, metricsEpoch]);
 
   const lowSample = vsmMetrics.sampleSize < 5;
+  const hasLeadSample = vsmMetrics.sampleSize >= 1;
+  const hasPceSample = vsmMetrics.sampleSize >= 1;
+  const hasThroughputSample = vsmMetrics.sampleSize >= 2;
   const windowLabel = formatCompletionWindowLabel(metricsWindowCompletions);
   const metricsTooltip = lowSample
     ? `Low sample size (n=${vsmMetrics.sampleSize}). Window: ${windowLabel}`
     : `n=${vsmMetrics.sampleSize}. Window: ${windowLabel}`;
+  const throughputTooltip = hasThroughputSample
+    ? `Throughput (Working): ${vsmMetrics.throughputWorkingPerHour.toFixed(1)}/h. ${metricsTooltip}`
+    : `Need at least 2 completions for throughput. ${metricsTooltip}`;
   const wipTooltip = `Q ${itemCounts.queued} · P ${itemCounts.processing} · S ${itemCounts.stuck}`;
-
-  const confidence = useMemo(() => {
-    if (vsmMetrics.sampleSize >= 20) {
-      return { label: 'High', className: 'text-emerald-600 bg-emerald-50 border-emerald-200' };
-    }
-    if (vsmMetrics.sampleSize >= 5) {
-      return { label: 'Medium', className: 'text-amber-600 bg-amber-50 border-amber-200' };
-    }
-    return { label: 'Low', className: 'text-slate-500 bg-slate-100 border-slate-200' };
-  }, [vsmMetrics.sampleSize]);
 
   // Format time as human-readable mixed units (e.g. "2h 15m", "1d 3h")
   const formatLeadTime = (ticks: number): string => {
@@ -181,6 +171,19 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
 
   // Performance: Use pre-computed counts instead of filtering
   const activeCount = itemCounts.wip;
+  const overallUtilization = useMemo(
+    () =>
+      computeOverallLiveUtilization(nodes, itemsByNode, {
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
+      }),
+    [capacityMode, itemsByNode, nodes, sharedCapacityInputMode, sharedCapacityValue],
+  );
+  const periodAverageUtilization = useMemo(
+    () => getLatestKpiUtilizationAverage(kpiHistoryByPeriod, demandUnit),
+    [demandUnit, kpiHistoryByPeriod],
+  );
 
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white border-2 border-slate-900 p-1.5 rounded-2xl z-50 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
@@ -201,14 +204,14 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
         </button>
         <button
             onClick={stepSimulation}
-            className="h-9 w-9 flex items-center justify-center text-blue-600 bg-blue-50 border border-blue-200/60 rounded-xl hover:bg-blue-100 transition-all"
+            className="h-9 w-9 flex items-center justify-center text-blue-600 bg-blue-50 border-2 border-blue-300 rounded-xl hover:bg-blue-100 transition-all shadow-[2px_2px_0px_0px_rgba(37,99,235,0.3)] active:translate-y-[1px] active:shadow-none"
             title="Step Forward (1 tick)"
         >
             <SkipForward size={15} fill="currentColor" />
         </button>
         <button
           onClick={resetSimulation}
-          className="h-9 w-9 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all"
+          className="h-9 w-9 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl border-2 border-slate-200 transition-all active:translate-y-[1px]"
           title="Reset Data (Keep Layout)"
         >
           <RotateCcw size={15} />
@@ -307,7 +310,7 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
         <div className="flex flex-col items-center w-[32px]">
            <span className="text-[9px] text-emerald-500 uppercase font-semibold tracking-wide leading-none mb-1">PCE</span>
            <span
-             className={`font-mono font-bold text-xs leading-none ${lowSample ? 'text-slate-300' : 'text-slate-800'}`}
+             className={`font-mono font-bold text-xs leading-none ${hasPceSample ? 'text-slate-800' : 'text-slate-300'}`}
              title={metricsTooltip}
            >
              {vsmMetrics.pce.toFixed(0)}%
@@ -316,7 +319,7 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
         <div className="flex flex-col items-center w-[44px]">
            <span className="text-[9px] text-amber-500 uppercase font-semibold tracking-wide leading-none mb-1">Lead</span>
            <span
-             className={`font-mono font-bold text-xs leading-none whitespace-nowrap ${lowSample ? 'text-slate-300' : 'text-slate-800'}`}
+             className={`font-mono font-bold text-xs leading-none whitespace-nowrap ${hasLeadSample ? 'text-slate-800' : 'text-slate-300'}`}
              title={`Lead (Working): ${formatLeadTime(vsmMetrics.avgLeadWorking)}. ${metricsTooltip}`}
            >
              {formatLeadTime(vsmMetrics.avgLeadWorking)}
@@ -325,15 +328,21 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
         <div className="flex flex-col items-center w-[44px]">
            <span className="text-[9px] text-violet-500 uppercase font-semibold tracking-wide leading-none mb-1">Thru</span>
            <span
-             className={`font-mono font-bold text-xs leading-none ${lowSample ? 'text-slate-300' : 'text-slate-800'}`}
-             title={`Throughput (Working): ${vsmMetrics.throughputWorkingPerHour.toFixed(1)}/h. ${metricsTooltip}`}
+             className={`font-mono font-bold text-xs leading-none ${hasThroughputSample ? 'text-slate-800' : 'text-slate-300'}`}
+             title={throughputTooltip}
            >
              {vsmMetrics.throughputWorkingPerHour.toFixed(1)}/h
            </span>
         </div>
-        <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold leading-none ${confidence.className}`} title={`n=${vsmMetrics.sampleSize}`}>
-          {confidence.label}
-        </span>
+        <div className="flex flex-col items-center w-[40px]">
+           <span className="text-[9px] text-teal-500 uppercase font-semibold tracking-wide leading-none mb-1">Util</span>
+           <span
+             className="font-mono font-bold text-xs leading-none text-slate-800"
+             title={`Latest ${demandUnit} average resource utilisation across start and process nodes. Live now: ${overallUtilization.toFixed(0)}%.`}
+           >
+             {periodAverageUtilization.toFixed(0)}%
+           </span>
+        </div>
       </div>
 
       <div className="w-px h-7 bg-slate-200" />
@@ -353,7 +362,6 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
             <Plus size={14} />
             Add
           </button>
-
           <button
             onClick={onOpenAnalytics}
             className="h-9 w-9 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all"

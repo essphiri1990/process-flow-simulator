@@ -30,13 +30,19 @@ vi.mock('../processBoxSdk', () => ({
 }));
 
 import { useStore } from '../store';
-import { computeLeadMetrics } from '../metrics';
+import { computeLeadMetrics, computeRollingNodeUtilization, NODE_UTILIZATION_ROLLING_WINDOW_TICKS } from '../metrics';
 import { nextMulberry32 } from '../rng';
 
 // Helper to reset store to a clean state before each test
 const resetStore = () => {
   const store = useStore.getState();
   store.clearCanvas();
+  useStore.setState({
+    capacityMode: 'local',
+    sharedCapacityInputMode: 'fte',
+    sharedCapacityValue: 3,
+    blockedCountsByTarget: new Map(),
+  });
 };
 
 beforeEach(() => {
@@ -132,11 +138,18 @@ const setupLinearFlow = () => {
     demandAccumulatorByNode: {},
     demandOpenTicksByNode: {},
     periodCompleted: 0,
+    capacityMode: 'local',
+    sharedCapacityInputMode: 'fte',
+    sharedCapacityValue: 3,
     simulationSeed: 12345,
+    durationPreset: 'unlimited',
+    targetDuration: Infinity,
+    autoStopEnabled: true,
     runStartedAtMs: null,
     lastRunSummary: null,
     lastLoggedRunKey: null,
     itemsByNode: new Map(),
+    blockedCountsByTarget: new Map(),
     itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
     autoInjectionEnabled: false,
   });
@@ -204,11 +217,15 @@ const setupDeterministicQualityFlow = (seed: number) => {
     demandAccumulatorByNode: {},
     demandOpenTicksByNode: {},
     periodCompleted: 0,
+    capacityMode: 'local',
+    sharedCapacityInputMode: 'fte',
+    sharedCapacityValue: 3,
     simulationSeed: seed,
     runStartedAtMs: null,
     lastRunSummary: null,
     lastLoggedRunKey: null,
     itemsByNode: new Map(),
+    blockedCountsByTarget: new Map(),
     itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
     autoInjectionEnabled: false,
   });
@@ -293,11 +310,15 @@ const setupPullFlow = () => {
     demandAccumulatorByNode: {},
     demandOpenTicksByNode: {},
     periodCompleted: 0,
+    capacityMode: 'local',
+    sharedCapacityInputMode: 'fte',
+    sharedCapacityValue: 3,
     simulationSeed: 2024,
     runStartedAtMs: null,
     lastRunSummary: null,
     lastLoggedRunKey: null,
     itemsByNode: new Map(),
+    blockedCountsByTarget: new Map(),
     itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
     autoInjectionEnabled: false,
   });
@@ -367,6 +388,9 @@ const setupTargetDemandFlow = (seed = 4242) => {
     demandAccumulatorByNode: {},
     demandOpenTicksByNode: {},
     periodCompleted: 0,
+    capacityMode: 'local',
+    sharedCapacityInputMode: 'fte',
+    sharedCapacityValue: 3,
     durationPreset: '1hour',
     targetDuration: 60,
     autoStopEnabled: true,
@@ -375,6 +399,7 @@ const setupTargetDemandFlow = (seed = 4242) => {
     lastRunSummary: null,
     lastLoggedRunKey: null,
     itemsByNode: new Map(),
+    blockedCountsByTarget: new Map(),
     itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
     autoInjectionEnabled: false,
   });
@@ -489,6 +514,20 @@ describe('Store - Node Management', () => {
     expect(useStore.getState().items.length).toBe(0);
   });
 
+  it('deleteNode refreshes derived item state immediately', () => {
+    setupLinearFlow();
+    const store = useStore.getState();
+    store.addItem('proc-1');
+    expect(useStore.getState().itemsByNode.get('proc-1')).toHaveLength(1);
+
+    store.deleteNode('proc-1');
+
+    const state = useStore.getState();
+    expect(state.itemsByNode.get('proc-1')).toBeUndefined();
+    expect(state.itemCounts.wip).toBe(0);
+    expect(state.itemCounts.queued).toBe(0);
+  });
+
   it('updateNodeData updates specific fields', () => {
     setupLinearFlow();
     const store = useStore.getState();
@@ -549,6 +588,15 @@ describe('Store - Item Management', () => {
     expect(state.items[0].status).toBe(ItemStatus.QUEUED);
     expect(state.items[0].currentNodeId).toBe('proc-1');
     expect(state.items[0].spawnTick).toBe(0);
+  });
+
+  it('addItem refreshes derived item state immediately', () => {
+    useStore.getState().addItem('proc-1');
+
+    const state = useStore.getState();
+    expect(state.itemsByNode.get('proc-1')).toHaveLength(1);
+    expect(state.itemCounts.wip).toBe(1);
+    expect(state.itemCounts.queued).toBe(1);
   });
 
   it('addItem initializes VSM metric buckets to 0', () => {
@@ -619,6 +667,15 @@ describe('Store - Simulation Controls', () => {
     expect((node!.data as any).stats).toEqual({ processed: 0, failed: 0, maxQueue: 0 });
   });
 
+  it('resetSimulation preserves current validation warnings', () => {
+    useStore.getState().updateNodeData('proc-1', { resources: 0 });
+
+    useStore.getState().resetSimulation();
+
+    const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
+    expect((node!.data as any).validationError).toBe('Zero Capacity');
+  });
+
   it('clearCanvas removes everything', () => {
     useStore.getState().clearCanvas();
     const state = useStore.getState();
@@ -635,6 +692,24 @@ describe('Store - Simulation Controls', () => {
     expect(useStore.getState().autoInjectionEnabled).toBe(!initial);
     useStore.getState().toggleAutoInjection();
     expect(useStore.getState().autoInjectionEnabled).toBe(initial);
+  });
+
+  it('setNodes prunes edges and in-flight items for removed nodes immediately', () => {
+    useStore.getState().addItem('proc-1');
+
+    const retainedNodes = useStore
+      .getState()
+      .nodes
+      .filter((node) => node.id !== 'proc-1');
+
+    useStore.getState().setNodes(retainedNodes as any);
+
+    const state = useStore.getState();
+    expect(state.nodes).toHaveLength(2);
+    expect(state.edges).toEqual([]);
+    expect(state.items).toEqual([]);
+    expect(state.itemCounts.wip).toBe(0);
+    expect((state.nodes.find((node) => node.id === 'start-1')!.data as any).validationError).toBe('No Output Path');
   });
 
   it('setTickSpeed updates tick speed', () => {
@@ -676,6 +751,47 @@ describe('Store - Tick Engine', () => {
     const item = useStore.getState().items[0];
     expect(item.status).toBe(ItemStatus.PROCESSING);
     expect(item.remainingTime).toBe(2);
+  });
+
+  it('shared allocation mode advances processing fractionally based on allocated capacity', () => {
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      sharedCapacityInputMode: 'fte',
+      sharedCapacityValue: 1,
+    });
+    useStore.getState().updateNodeData('proc-1', {
+      processingTime: 4,
+      allocationPercent: 50,
+    });
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().tick(); // queued -> processing
+    useStore.getState().tick(); // first half-tick of effective work
+
+    let item = useStore.getState().items[0];
+    expect(item.status).toBe(ItemStatus.PROCESSING);
+    expect(item.remainingTime).toBe(3.5);
+    expect(item.timeActive).toBe(0.5);
+    expect(item.timeWaiting).toBe(0.5);
+
+    for (let i = 0; i < 7; i++) {
+      useStore.getState().tick();
+    }
+
+    item = useStore.getState().items[0];
+    expect(item.status).toBe(ItemStatus.COMPLETED);
+    expect(item.completionTick).toBe(8);
+  });
+
+  it('preserves allocationPercent when unrelated node config changes', () => {
+    useStore.getState().updateNodeData('proc-1', { allocationPercent: 30 });
+    useStore.getState().updateNodeData('proc-1', { flowMode: 'pull' });
+    useStore.getState().updateNodeData('proc-1', { quality: 0.85 });
+
+    const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
+    expect((node!.data as any).allocationPercent).toBe(30);
+    expect((node!.data as any).flowMode).toBe('pull');
+    expect((node!.data as any).quality).toBe(0.85);
   });
 
   it('item completes immediately when the next node is an instant end node', () => {
@@ -800,6 +916,22 @@ describe('Store - Tick Engine', () => {
     expect(new Set(completed.map((item) => item.completionTick)).size).toBe(1);
   });
 
+  it('treats batch size 0 as batching off and fills available resources individually', () => {
+    useStore.getState().updateNodeData('proc-1', {
+      resources: 3,
+      batchSize: 0,
+      processingTime: 3,
+    });
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().addItem('proc-1');
+    useStore.getState().addItem('proc-1');
+    useStore.getState().tick();
+
+    const processing = useStore.getState().items.filter((item) => item.status === ItemStatus.PROCESSING);
+    expect(processing).toHaveLength(3);
+  });
+
   it('holds completed work upstream until a pull node has open slots', () => {
     setupPullFlow();
 
@@ -857,6 +989,113 @@ describe('Store - Tick Engine', () => {
     expect(downstreamQueued).toHaveLength(0);
     expect(downstreamProcessing).toHaveLength(3);
     expect(upstreamBlocked).toHaveLength(3);
+  });
+
+  it('push-to-pull keeps existing local queue and blocks only new arrivals upstream', () => {
+    setupPullFlow();
+
+    useStore.getState().updateNodeData('upstream', {
+      resources: 4,
+      processingTime: 1,
+      flowMode: 'push',
+    });
+    useStore.getState().updateNodeData('downstream', {
+      resources: 1,
+      processingTime: 5,
+      flowMode: 'push',
+    });
+
+    for (let i = 0; i < 4; i++) {
+      useStore.getState().addItem('upstream');
+    }
+
+    useStore.getState().tick(); // upstream starts
+    useStore.getState().tick(); // downstream now has 1 processing + 3 queued
+
+    useStore.getState().updateNodeData('downstream', { flowMode: 'pull' });
+
+    useStore.getState().addItem('upstream');
+    useStore.getState().addItem('upstream');
+    useStore.getState().tick(); // new upstream items start
+    useStore.getState().tick(); // new arrivals should block upstream
+
+    const items = useStore.getState().items;
+    const downstreamLocal = items.filter((item) => item.currentNodeId === 'downstream');
+    const upstreamBlocked = items.filter(
+      (item) => item.currentNodeId === 'upstream' && item.handoffTargetNodeId === 'downstream'
+    );
+
+    expect(downstreamLocal).toHaveLength(4);
+    expect(upstreamBlocked).toHaveLength(2);
+    expect(useStore.getState().blockedCountsByTarget.get('downstream')).toBe(2);
+  });
+
+  it('switching a pull node back to push releases blocked upstream work', () => {
+    setupPullFlow();
+
+    useStore.getState().updateNodeData('upstream', {
+      resources: 2,
+      processingTime: 1,
+    });
+    useStore.getState().updateNodeData('downstream', {
+      resources: 1,
+      processingTime: 5,
+      flowMode: 'pull',
+    });
+
+    useStore.getState().addItem('upstream');
+    useStore.getState().addItem('upstream');
+
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    expect(
+      useStore.getState().items.filter(
+        (item) => item.currentNodeId === 'upstream' && item.handoffTargetNodeId === 'downstream'
+      )
+    ).toHaveLength(1);
+
+    useStore.getState().updateNodeData('downstream', { flowMode: 'push' });
+    useStore.getState().tick();
+
+    expect(
+      useStore.getState().items.filter(
+        (item) => item.currentNodeId === 'upstream' && item.handoffTargetNodeId === 'downstream'
+      )
+    ).toHaveLength(0);
+    expect(
+      useStore.getState().items.filter((item) => item.currentNodeId === 'downstream')
+    ).toHaveLength(2);
+  });
+
+  it('reconnecting an upstream edge retargets blocked pull items to the new route', () => {
+    setupPullFlow();
+
+    useStore.getState().addItem('upstream');
+    useStore.getState().addItem('downstream');
+
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    const blockedBeforeReconnect = useStore.getState().items.find(
+      (item) => item.currentNodeId === 'upstream' && item.handoffTargetNodeId === 'downstream'
+    );
+    expect(blockedBeforeReconnect).toBeDefined();
+
+    const oldEdge = useStore.getState().edges.find((edge) => edge.id === 'e1')!;
+    useStore.getState().reconnectEdge(oldEdge, {
+      source: 'upstream',
+      target: 'end-1',
+      sourceHandle: null,
+      targetHandle: null,
+    });
+
+    const blockedAfterReconnect = useStore.getState().items.find((item) => item.id === blockedBeforeReconnect!.id);
+    expect(blockedAfterReconnect?.handoffTargetNodeId).toBe('end-1');
+
+    useStore.getState().tick();
+
+    expect(useStore.getState().items.find((item) => item.id === blockedBeforeReconnect!.id)?.status).toBe(ItemStatus.COMPLETED);
   });
 
   it('auto-injection creates items at start nodes on schedule', () => {
@@ -925,6 +1164,8 @@ describe('Store - Tick Engine', () => {
 });
 
 describe('Store - Seeded Simulation And Process Box Logging', () => {
+  beforeEach(() => resetStore());
+
   it('same flow + same seed + same settings produce identical stochastic outcomes across reruns', () => {
     const passingSeed = findSeedForQualityOutcome(true);
     setupDeterministicQualityFlow(passingSeed);
@@ -1065,6 +1306,52 @@ describe('Store - Seeded Simulation And Process Box Logging', () => {
     expect(payload.score).toBe(state.lastRunSummary!.score);
     expect(payload.durationMs).toBeGreaterThanOrEqual(0);
     expect(payload.metadata).toMatchObject(state.lastRunSummary!);
+  });
+
+  it('tracks hourly KPI buckets for lead time, process efficiency, and utilisation', () => {
+    setupLinearFlow();
+    useStore.setState({
+      kpiHistoryByPeriod: {
+        hour: [],
+        day: [],
+        week: [],
+        month: [],
+      },
+    } as any);
+
+    useStore.getState().addItem('start-1');
+    for (let i = 0; i < 10; i++) {
+      useStore.getState().tick();
+    }
+
+    const hourlyBuckets = useStore.getState().kpiHistoryByPeriod.hour;
+    expect(hourlyBuckets).toHaveLength(1);
+    expect(hourlyBuckets[0].completions).toBeGreaterThanOrEqual(1);
+    expect(hourlyBuckets[0].leadTimeAvg).toBeGreaterThan(0);
+    expect(hourlyBuckets[0].processEfficiencyAvg).toBeGreaterThan(0);
+    expect(hourlyBuckets[0].resourceUtilizationAvg).toBeGreaterThan(0);
+    expect(hourlyBuckets[0].availableResourceTicks).toBeGreaterThan(hourlyBuckets[0].busyResourceTicks);
+  });
+
+  it('tracks rolling per-node utilisation history for node badge averages', () => {
+    setupLinearFlow();
+
+    useStore.getState().addItem('start-1');
+    for (let i = 0; i < 10; i++) {
+      useStore.getState().tick();
+    }
+
+    let startHistory = useStore.getState().nodeUtilizationHistoryByNode['start-1'];
+    expect(startHistory).toHaveLength(10);
+    expect(computeRollingNodeUtilization(startHistory)).toBeCloseTo(20);
+
+    for (let i = 0; i < 55; i++) {
+      useStore.getState().tick();
+    }
+
+    startHistory = useStore.getState().nodeUtilizationHistoryByNode['start-1'];
+    expect(startHistory).toHaveLength(NODE_UTILIZATION_ROLLING_WINDOW_TICKS);
+    expect(computeRollingNodeUtilization(startHistory)).toBe(0);
   });
 });
 
@@ -1270,6 +1557,12 @@ describe('Store - Scenario Loading', () => {
     const firstEdge = state.edges.find((edge) => edge.id === 'e1');
     expect(firstEdge?.sourceHandle).toBe('right');
     expect(firstEdge?.targetHandle).toBe('left-target');
+    const reviewRework = state.edges.find((edge) => edge.id === 'e4-fail');
+    const qaRework = state.edges.find((edge) => edge.id === 'e5-fail');
+    expect(reviewRework?.sourceHandle).toBe('top-source');
+    expect(reviewRework?.targetHandle).toBe('top-target');
+    expect(qaRework?.sourceHandle).toBe('top-source');
+    expect(qaRework?.targetHandle).toBe('top-target');
   });
 
   it('loadScenario("hospital") loads the hospital scenario', () => {
@@ -1411,7 +1704,6 @@ describe('Store - Validation Errors', () => {
     setupLinearFlow();
     // Remove edges from proc-1
     useStore.getState().deleteEdge('e2');
-    useStore.getState().tick();
     const node = useStore.getState().nodes.find(n => n.id === 'proc-1');
     expect((node!.data as any).validationError).toBe('No Output Path');
   });
@@ -1426,9 +1718,61 @@ describe('Store - Validation Errors', () => {
   it('nodes with zero capacity get validation error', () => {
     setupLinearFlow();
     useStore.getState().updateNodeData('proc-1', { resources: 0 });
-    useStore.getState().tick();
     const node = useStore.getState().nodes.find(n => n.id === 'proc-1');
     expect((node!.data as any).validationError).toBe('Zero Capacity');
+  });
+
+  it('nodes with zero local capacity do not start work or accumulate utilization capacity', () => {
+    setupLinearFlow();
+    useStore.getState().updateNodeData('proc-1', { resources: 0 });
+    useStore.getState().addItem('proc-1');
+
+    useStore.getState().tick();
+
+    const state = useStore.getState();
+    expect(state.items.filter((item) => item.status === ItemStatus.PROCESSING)).toHaveLength(0);
+    expect(state.items[0]?.status).toBe(ItemStatus.QUEUED);
+    expect(state.nodeUtilizationHistoryByNode['proc-1']?.[0]?.availableResourceTicks ?? null).toBe(0);
+  });
+
+  it('shared allocation nodes with no assigned share get validation error', () => {
+    setupLinearFlow();
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      sharedCapacityInputMode: 'fte',
+      sharedCapacityValue: 1,
+    });
+    useStore.getState().updateNodeData('start-1', { allocationPercent: 100 });
+    useStore.getState().updateNodeData('proc-1', { allocationPercent: 0 });
+
+    const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
+    expect((node!.data as any).validationError).toBe('Zero Allocation');
+  });
+
+  it('settings resets clear runtime stats and stale validation immediately', () => {
+    setupLinearFlow();
+
+    useStore.setState({
+      nodes: useStore.getState().nodes.map((node) =>
+        node.id === 'proc-1'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                stats: { processed: 7, failed: 2, maxQueue: 3 },
+                validationError: 'No Output Path',
+              },
+            }
+          : node
+      ) as any,
+    });
+
+    useStore.getState().setSharedCapacityValue(6);
+
+    const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
+    expect((node!.data as any).stats).toEqual({ processed: 0, failed: 0, maxQueue: 0 });
+    expect((node!.data as any).validationError).toBeUndefined();
+    expect(useStore.getState().items).toHaveLength(0);
   });
 });
 

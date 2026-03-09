@@ -4,6 +4,8 @@ import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../
 import { useStore } from '../store';
 import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2 } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
+import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
+import { computeNodeLiveUtilizationForLoad, getLocalCapacityUnits, getNodeCapacityProfile } from '../capacityModel';
 
 const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup instead of O(n) filter)
@@ -13,17 +15,42 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const deleteNode = useStore((state) => state.deleteNode);
   const readOnlyMode = useStore((state) => state.readOnlyMode);
   const timeUnit = useStore((state) => state.timeUnit);
+  const nodes = useStore((state) => state.nodes);
+  const capacityMode = useStore((state) => state.capacityMode);
+  const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
+  const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
+  const blockedInboundCount = useStore((state) => state.blockedCountsByTarget.get(id) || 0);
+  const rollingUtilization = useStore((state) => getRollingNodeUtilization(state.nodeUtilizationHistoryByNode, id));
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
-  const batchSize = Math.max(1, data.batchSize || 1);
+  const batchingEnabled = Number.isFinite(Number(data.batchSize)) && Number(data.batchSize) > 1;
+  const batchSize = batchingEnabled ? Math.max(2, Math.round(Number(data.batchSize))) : 0;
   const flowMode = data.flowMode === 'pull' ? 'pull' : 'push';
+  const node = nodes.find((candidate) => candidate.id === id) as any;
+  const capacityProfile = node
+    ? getNodeCapacityProfile(node, nodes as any, {
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
+      })
+    : null;
+  const usesSharedAllocation = capacityProfile?.usesSharedAllocation ?? false;
+  const displayCapacity = Math.max(
+    0,
+    usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
+  );
 
   // Separate queued and processing in single pass
-  const queuedItems: typeof items = [];
+  const localQueuedItems: typeof items = [];
+  const blockedQueuedItems: typeof items = [];
   const processingItems: typeof items = [];
   let waitTimeSum = 0;
   for (const item of items) {
     if (item.status === ItemStatus.QUEUED) {
-      queuedItems.push(item);
+      if (item.handoffTargetNodeId) {
+        blockedQueuedItems.push(item);
+      } else {
+        localQueuedItems.push(item);
+      }
       waitTimeSum += Math.max(0, item.nodeLeadTime);
     } else if (item.status === ItemStatus.PROCESSING) {
       processingItems.push(item);
@@ -31,8 +58,27 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       waitTimeSum += Math.max(0, item.nodeLeadTime - processingSoFar);
     }
   }
-  const activeCount = queuedItems.length + processingItems.length;
+  localQueuedItems.sort((left, right) => left.nodeEnterTick - right.nodeEnterTick);
+  blockedQueuedItems.sort((left, right) => left.nodeEnterTick - right.nodeEnterTick);
+  const totalQueuedCount = localQueuedItems.length + blockedQueuedItems.length;
+  const blockedGroups = Array.from(
+    blockedQueuedItems.reduce((groups, item) => {
+      const targetId = item.handoffTargetNodeId || 'unknown';
+      const targetNode = nodes.find((candidate) => candidate.id === targetId);
+      const current = groups.get(targetId);
+      groups.set(targetId, {
+        label: targetNode?.data?.label || 'Downstream pull',
+        count: (current?.count || 0) + 1,
+      });
+      return groups;
+    }, new Map<string, { label: string; count: number }>()),
+  );
+  const activeCount = totalQueuedCount + processingItems.length;
   const avgWaitTime = activeCount > 0 ? waitTimeSum / activeCount : 0;
+  const liveUtilization =
+    usesSharedAllocation && capacityProfile
+      ? computeNodeLiveUtilizationForLoad(processingItems.length, capacityProfile)
+      : computeNodeUtilization(items, data.resources);
 
   const formatWaitTime = (ticks: number) => {
     if (ticks <= 0) return '0m';
@@ -57,7 +103,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const usedSlots = new Set(slotMap.values());
   for (const item of processingItems) {
     if (!slotMap.has(item.id)) {
-      for (let s = 0; s < data.resources; s++) {
+      for (let s = 0; s < displayCapacity; s++) {
         if (!usedSlots.has(s)) {
           slotMap.set(item.id, s);
           usedSlots.add(s);
@@ -68,7 +114,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   }
 
   // Build slot-indexed array
-  const slots: (ProcessItem | null)[] = Array.from({ length: data.resources }, () => null);
+  const slots: (ProcessItem | null)[] = Array.from({ length: displayCapacity }, () => null);
   for (const item of processingItems) {
     const slotIdx = slotMap.get(item.id);
     if (slotIdx !== undefined && slotIdx < slots.length) {
@@ -86,9 +132,9 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       bgOverlay = "bg-red-50/30";
   } else if (selected) {
       borderColor = "border-blue-500";
-  } else if (queuedItems.length >= 10) {
+  } else if (totalQueuedCount >= 10) {
       borderColor = "border-red-400";
-  } else if (queuedItems.length >= 3) {
+  } else if (totalQueuedCount >= 3) {
       borderColor = "border-amber-400";
   }
 
@@ -174,40 +220,71 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       <div className="overflow-hidden rounded-[10px] w-full h-full">
           {/* Header */}
           <div
-            className="border-b px-4 py-3 flex justify-between items-center relative"
+            className="border-b px-4 py-3 flex justify-between items-start gap-3 relative"
             style={{
               backgroundColor: (data.headerColor || defaultHeaderColor) + '40',
               borderColor: (data.headerColor || defaultHeaderColor) + '60',
             }}
           >
-             <div className="flex items-center gap-2">
+             <div className="flex items-start gap-2 min-w-0 flex-1">
                 {isSource && (
-                    <div className="bg-purple-100 p-1 rounded-full text-purple-600 shadow-sm" title="Active Input Source">
+                    <div className="bg-purple-100 p-1 rounded-full text-purple-600 shadow-sm shrink-0" title="Active Input Source">
                         <Zap size={12} fill="currentColor" />
                     </div>
                 )}
-                <div>
-                    <div className="font-bold text-slate-800">{data.label}</div>
-                    <div className="flex gap-3 text-[10px] text-slate-500 font-medium uppercase tracking-wider mt-1">
-                        <span className="flex items-center gap-1"><Clock size={10} /> {data.processingTime} {unitAbbrev}</span>
-                        <span className="flex items-center gap-1"><Users size={10} /> {data.resources}</span>
+                <div className="min-w-0 flex-1">
+                    <div className="font-bold text-slate-800 leading-tight truncate">{data.label}</div>
+                    <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 font-medium">
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap" title="Processing time">
+                          <Clock size={11} className="text-slate-400 shrink-0" />
+                          <span className="tabular-nums">{data.processingTime}{unitAbbrev}</span>
+                        </span>
+                        <span className="text-slate-300">·</span>
                         <span
-                          className="flex items-center gap-1"
-                          title="Average current waiting time for active items in this node."
+                          className="inline-flex items-center gap-1 whitespace-nowrap"
+                          title={usesSharedAllocation ? 'Shared team allocation for this node' : 'Resources'}
                         >
-                          <Clock size={10} className="text-amber-500" /> Wait {formatWaitTime(avgWaitTime)}
+                          <Users size={11} className="text-slate-400 shrink-0" />
+                          <span className="tabular-nums">
+                            {usesSharedAllocation
+                              ? `${(capacityProfile?.allocationPercent ?? 0).toFixed(0)}%`
+                              : data.resources}
+                          </span>
+                        </span>
+                        <span className="text-slate-300">·</span>
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap" title="Average wait time">
+                          <Clock size={11} className="text-amber-500 shrink-0" />
+                          <span className="tabular-nums">{formatWaitTime(avgWaitTime)}</span>
+                        </span>
+                        <span className="text-slate-300">·</span>
+                        <span
+                          className="inline-flex items-center gap-1 whitespace-nowrap"
+                          title={`Rolling 1h average utilisation for this node. Live now: ${liveUtilization.toFixed(0)}%.`}
+                        >
+                          <Users size={11} className="text-emerald-500 shrink-0" />
+                          <span className="tabular-nums">{rollingUtilization.toFixed(0)}%</span>
                         </span>
                     </div>
-                    {((batchSize > 1 && flowMode !== 'pull') || flowMode === 'pull') && (
+                    {(usesSharedAllocation || batchingEnabled || flowMode === 'pull' || blockedInboundCount > 0) && (
                       <div className="flex gap-2 mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                        {batchSize > 1 && flowMode !== 'pull' && (
+                        {usesSharedAllocation && (
+                          <span className="rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-blue-700">
+                            {capacityProfile?.allocatedHoursPerDay.toFixed(1)}h/day
+                          </span>
+                        )}
+                        {batchingEnabled && flowMode !== 'pull' && !usesSharedAllocation && (
                           <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-slate-600">
                             Batch {batchSize}
                           </span>
                         )}
                         {flowMode === 'pull' && (
                           <span className="rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-blue-700">
-                            Pull cap {data.resources}
+                            Pull cap {displayCapacity}
+                          </span>
+                        )}
+                        {blockedInboundCount > 0 && (
+                          <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700">
+                            Incoming blocked {blockedInboundCount}
                           </span>
                         )}
                       </div>
@@ -227,7 +304,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
             <div className="flex flex-col gap-2">
                 <div className="text-[10px] uppercase font-bold text-slate-400 flex justify-between">
                     <span>Active Processing</span>
-                    <span>{processingItems.length}/{data.resources}</span>
+                    <span>{processingItems.length}/{displayCapacity}</span>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                     {slots.map((item, idx) => {
@@ -273,11 +350,11 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
             <div className="flex flex-col gap-2">
                 <div className="text-[10px] uppercase font-bold text-slate-400 flex justify-between">
                     <span>Queue</span>
-                    <span className={`${queuedItems.length > 5 ? 'text-red-500 font-bold' : ''}`}>{queuedItems.length}</span>
+                    <span className={`${localQueuedItems.length > 5 ? 'text-red-500 font-bold' : ''}`}>{localQueuedItems.length}</span>
                 </div>
-                <div className={`h-12 bg-slate-100/50 rounded-lg border border-dashed flex items-center px-2 gap-[-8px] overflow-hidden relative transition-colors duration-300 ${queuedItems.length >= 10 ? 'border-red-300 bg-red-50' : 'border-slate-300'}`}>
-                    {queuedItems.length === 0 && <span className="text-[10px] text-slate-400 w-full text-center">Empty</span>}
-                    {queuedItems.slice(0, 20).map((item, i) => (
+                <div className={`h-12 bg-slate-100/50 rounded-lg border border-dashed flex items-center px-2 gap-[-8px] overflow-hidden relative transition-colors duration-300 ${localQueuedItems.length >= 10 ? 'border-red-300 bg-red-50' : 'border-slate-300'}`}>
+                    {localQueuedItems.length === 0 && <span className="text-[10px] text-slate-400 w-full text-center">Empty</span>}
+                    {localQueuedItems.slice(0, 20).map((item, i) => (
                         <div
                             key={item.id}
                             className="w-5 h-5 shadow-sm flex-shrink-0 border border-white/50 -ml-2 first:ml-0 flex items-center justify-center text-white"
@@ -291,13 +368,32 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                         >
                         </div>
                     ))}
-                    {queuedItems.length > 10 && (
+                    {localQueuedItems.length > 10 && (
                          <div className="absolute right-0 top-0 h-full w-10 bg-gradient-to-l from-slate-100 to-transparent z-20 flex items-center justify-end px-1">
                              <span className="text-xs font-bold text-slate-500">+</span>
                          </div>
                     )}
                 </div>
             </div>
+
+            {blockedQueuedItems.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <div className="text-[10px] uppercase font-bold text-slate-400 flex justify-between">
+                  <span>Blocked for Pull</span>
+                  <span className="text-amber-600">{blockedQueuedItems.length}</span>
+                </div>
+                <div className="min-h-[48px] rounded-lg border border-amber-200 bg-amber-50/70 px-2 py-2 flex flex-wrap gap-2">
+                  {blockedGroups.map(([targetId, group]) => (
+                    <span
+                      key={targetId}
+                      className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2 py-1 text-[10px] font-bold text-amber-700"
+                    >
+                      {group.label} {group.count}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
           </div>
 

@@ -4,6 +4,8 @@ import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../
 import { useStore } from '../store';
 import { Play, Zap, Clock, Users, AlertTriangle, User, Box, FileText, Trash2 } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
+import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
+import { computeNodeLiveUtilizationForLoad, getLocalCapacityUnits, getNodeCapacityProfile } from '../capacityModel';
 
 const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup)
@@ -13,18 +15,76 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const deleteNode = useStore((state) => state.deleteNode);
   const readOnlyMode = useStore((state) => state.readOnlyMode);
   const timeUnit = useStore((state) => state.timeUnit);
+  const nodes = useStore((state) => state.nodes);
+  const capacityMode = useStore((state) => state.capacityMode);
+  const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
+  const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
+  const blockedInboundCount = useStore((state) => state.blockedCountsByTarget.get(id) || 0);
+  const rollingUtilization = useStore((state) => getRollingNodeUtilization(state.nodeUtilizationHistoryByNode, id));
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
+  const node = nodes.find((candidate) => candidate.id === id) as any;
+  const capacityProfile = node
+    ? getNodeCapacityProfile(node, nodes as any, {
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
+      })
+    : null;
+  const usesSharedAllocation = capacityProfile?.usesSharedAllocation ?? false;
+  const displayCapacity = Math.max(
+    0,
+    usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
+  );
 
   // Single pass to separate items by status
-  const queuedItems: typeof items = [];
+  const localQueuedItems: typeof items = [];
+  const blockedQueuedItems: typeof items = [];
   const processingItems: typeof items = [];
+  let waitTimeSum = 0;
   for (const item of items) {
-    if (item.status === ItemStatus.QUEUED) queuedItems.push(item);
-    else if (item.status === ItemStatus.PROCESSING) processingItems.push(item);
+    if (item.status === ItemStatus.QUEUED) {
+      if (item.handoffTargetNodeId) {
+        blockedQueuedItems.push(item);
+      } else {
+        localQueuedItems.push(item);
+      }
+      waitTimeSum += Math.max(0, item.nodeLeadTime);
+    } else if (item.status === ItemStatus.PROCESSING) {
+      processingItems.push(item);
+      const processingSoFar = Math.max(0, item.processingDuration - item.remainingTime);
+      waitTimeSum += Math.max(0, item.nodeLeadTime - processingSoFar);
+    }
   }
-  queuedItems.sort((a, b) => a.spawnTick - b.spawnTick);
+  localQueuedItems.sort((a, b) => a.spawnTick - b.spawnTick);
+  blockedQueuedItems.sort((a, b) => a.spawnTick - b.spawnTick);
   // Sort by spawnTick so items stay in stable slot positions across renders
   processingItems.sort((a, b) => a.spawnTick - b.spawnTick);
+  const blockedGroups = Array.from(
+    blockedQueuedItems.reduce((groups, item) => {
+      const targetId = item.handoffTargetNodeId || 'unknown';
+      const targetNode = nodes.find((candidate) => candidate.id === targetId);
+      const current = groups.get(targetId);
+      groups.set(targetId, {
+        label: targetNode?.data?.label || 'Downstream pull',
+        count: (current?.count || 0) + 1,
+      });
+      return groups;
+    }, new Map<string, { label: string; count: number }>()),
+  );
+  const activeCount = localQueuedItems.length + blockedQueuedItems.length + processingItems.length;
+  const avgWaitTime = activeCount > 0 ? waitTimeSum / activeCount : 0;
+  const liveUtilization =
+    usesSharedAllocation && capacityProfile
+      ? computeNodeLiveUtilizationForLoad(processingItems.length, capacityProfile)
+      : computeNodeUtilization(items, data.resources);
+
+  const formatWaitTime = (ticks: number) => {
+    if (ticks <= 0) return '0m';
+    if (ticks < 60) return `${Math.round(ticks)}m`;
+    const hours = Math.floor(ticks / 60);
+    const mins = Math.round(ticks % 60);
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  };
 
   // Keep processing items in stable slots so capacity changes read cleanly.
   const slotMapRef = useRef<Map<string, number>>(new Map());
@@ -38,7 +98,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const usedSlots = new Set(slotMap.values());
   for (const item of processingItems) {
     if (!slotMap.has(item.id)) {
-      for (let slotIndex = 0; slotIndex < data.resources; slotIndex++) {
+      for (let slotIndex = 0; slotIndex < displayCapacity; slotIndex++) {
         if (!usedSlots.has(slotIndex)) {
           slotMap.set(item.id, slotIndex);
           usedSlots.add(slotIndex);
@@ -48,7 +108,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
     }
   }
 
-  const slots: (ProcessItem | null)[] = Array.from({ length: data.resources }, () => null);
+  const slots: (ProcessItem | null)[] = Array.from({ length: displayCapacity }, () => null);
   for (const item of processingItems) {
     const slotIndex = slotMap.get(item.id);
     if (slotIndex !== undefined && slotIndex < slots.length) {
@@ -139,16 +199,53 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
               borderColor: (data.headerColor || defaultHeaderColor) + '60',
             }}
           >
-             <div className="flex items-center gap-2">
-                <div className="bg-emerald-100 p-1 rounded-full text-emerald-700 shadow-sm" title="Start Node">
+             <div className="flex items-start gap-2 min-w-0">
+                <div className="bg-emerald-100 p-1 rounded-full text-emerald-700 shadow-sm shrink-0" title="Start Node">
                     <Zap size={12} fill="currentColor" />
                 </div>
-                <div>
-                    <div className="font-bold text-slate-800">{data.label}</div>
-                    <div className="flex gap-3 text-[10px] text-slate-500 font-medium uppercase tracking-wider mt-1">
-                        <span className="flex items-center gap-1"><Clock size={10} /> {data.processingTime} {unitAbbrev}</span>
-                        <span className="flex items-center gap-1"><Users size={10} /> {data.resources}</span>
+                <div className="min-w-0 flex-1">
+                    <div className="font-bold text-slate-800 leading-tight truncate">{data.label}</div>
+                    <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 font-medium">
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap" title="Processing time">
+                          <Clock size={11} className="text-slate-400 shrink-0" />
+                          <span className="tabular-nums">{data.processingTime}{unitAbbrev}</span>
+                        </span>
+                        <span className="text-slate-300">·</span>
+                        <span
+                          className="inline-flex items-center gap-1 whitespace-nowrap"
+                          title={usesSharedAllocation ? 'Shared team allocation for this node' : 'Resources'}
+                        >
+                          <Users size={11} className="text-slate-400 shrink-0" />
+                          <span className="tabular-nums">
+                            {usesSharedAllocation
+                              ? `${(capacityProfile?.allocationPercent ?? 0).toFixed(0)}%`
+                              : data.resources}
+                          </span>
+                        </span>
+                        <span className="text-slate-300">·</span>
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap" title="Average wait time">
+                          <Clock size={11} className="text-amber-500 shrink-0" />
+                          <span className="tabular-nums">{formatWaitTime(avgWaitTime)}</span>
+                        </span>
+                        <span className="text-slate-300">·</span>
+                        <span
+                          className="inline-flex items-center gap-1 whitespace-nowrap"
+                          title={`Rolling 1h average utilisation for this node. Live now: ${liveUtilization.toFixed(0)}%.`}
+                        >
+                          <Users size={11} className="text-emerald-500 shrink-0" />
+                          <span className="tabular-nums">{rollingUtilization.toFixed(0)}%</span>
+                        </span>
                     </div>
+                    {usesSharedAllocation ? (
+                      <div className="flex items-center gap-1 text-[10px] text-blue-700 font-medium mt-1">
+                        <Users size={10} /> {capacityProfile?.allocatedHoursPerDay.toFixed(1)}h/day shared
+                      </div>
+                    ) : null}
+                    {blockedInboundCount > 0 ? (
+                      <div className="flex items-center gap-1 text-[10px] text-amber-700 font-medium mt-1">
+                        <Users size={10} /> Incoming blocked {blockedInboundCount}
+                      </div>
+                    ) : null}
                     {data.sourceConfig?.enabled ? (
                       <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-medium mt-1">
                         <Zap size={10} fill="currentColor" /> Generates {data.sourceConfig.batchSize} every {data.sourceConfig.interval} {unitAbbrev}
@@ -164,7 +261,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
              <div className="flex flex-col gap-2">
                 <div className="text-[10px] uppercase font-bold text-slate-400 flex justify-between">
                     <span>Active Processing</span>
-                    <span>{processingItems.length}/{data.resources}</span>
+                    <span>{processingItems.length}/{displayCapacity}</span>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                     {slots.map((item, index) => {
@@ -211,11 +308,11 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
              <div className="flex flex-col gap-2">
                 <div className="text-[10px] uppercase font-bold text-slate-400 flex justify-between">
                     <span>Queue</span>
-                    <span className={`${queuedItems.length > 5 ? 'text-red-500 font-bold' : ''}`}>{queuedItems.length}</span>
+                    <span className={`${localQueuedItems.length > 5 ? 'text-red-500 font-bold' : ''}`}>{localQueuedItems.length}</span>
                 </div>
-                <div className={`h-12 bg-slate-100/50 rounded-lg border border-dashed flex items-center px-2 gap-[-8px] overflow-hidden relative transition-colors duration-300 ${queuedItems.length >= 10 ? 'border-red-300 bg-red-50' : 'border-slate-300'}`}>
-                    {queuedItems.length === 0 && <span className="text-[10px] text-slate-400 w-full text-center">Empty</span>}
-                    {queuedItems.slice(0, 20).map((item, index) => (
+                <div className={`h-12 bg-slate-100/50 rounded-lg border border-dashed flex items-center px-2 gap-[-8px] overflow-hidden relative transition-colors duration-300 ${localQueuedItems.length >= 10 ? 'border-red-300 bg-red-50' : 'border-slate-300'}`}>
+                    {localQueuedItems.length === 0 && <span className="text-[10px] text-slate-400 w-full text-center">Empty</span>}
+                    {localQueuedItems.slice(0, 20).map((item, index) => (
                         <div
                             key={item.id}
                             className="w-5 h-5 shadow-sm flex-shrink-0 border border-white/50 -ml-2 first:ml-0 flex items-center justify-center text-white"
@@ -228,13 +325,32 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                             title={`Item ${item.id}`}
                         />
                     ))}
-                    {queuedItems.length > 10 && (
+                    {localQueuedItems.length > 10 && (
                          <div className="absolute right-0 top-0 h-full w-10 bg-gradient-to-l from-slate-100 to-transparent z-20 flex items-center justify-end px-1">
                              <span className="text-xs font-bold text-slate-500">+</span>
                          </div>
                     )}
                 </div>
              </div>
+
+             {blockedQueuedItems.length > 0 && (
+               <div className="flex flex-col gap-2">
+                  <div className="text-[10px] uppercase font-bold text-slate-400 flex justify-between">
+                      <span>Blocked for Pull</span>
+                      <span className="text-amber-600">{blockedQueuedItems.length}</span>
+                  </div>
+                  <div className="min-h-[48px] rounded-lg border border-amber-200 bg-amber-50/70 px-2 py-2 flex flex-wrap gap-2">
+                    {blockedGroups.map(([targetId, group]) => (
+                      <span
+                        key={targetId}
+                        className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2 py-1 text-[10px] font-bold text-amber-700"
+                      >
+                        {group.label} {group.count}
+                      </span>
+                    ))}
+                  </div>
+               </div>
+             )}
 
           </div>
 

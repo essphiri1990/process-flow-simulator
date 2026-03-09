@@ -32,10 +32,10 @@ const ToastIcon: React.FC<{ type: ToastMessage['type'] }> = ({ type }) => {
 };
 
 const borderColors: Record<string, string> = {
-  success: 'border-emerald-200',
-  warning: 'border-amber-200',
-  error: 'border-red-200',
-  info: 'border-blue-200',
+  success: 'border-emerald-600',
+  warning: 'border-amber-600',
+  error: 'border-red-600',
+  info: 'border-blue-600',
 };
 
 const ToastContainer: React.FC = () => {
@@ -69,13 +69,13 @@ const ToastContainer: React.FC = () => {
       {toasts.map(toast => (
         <div
           key={toast.id}
-          className={`bg-white/95 backdrop-blur shadow-lg border ${borderColors[toast.type]} rounded-xl px-4 py-3 flex items-center gap-3 animate-in slide-in-from-right-2 duration-200`}
+          className={`bg-white backdrop-blur border-2 ${borderColors[toast.type]} rounded-xl px-4 py-3 flex items-center gap-3 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.15)] animate-in slide-in-from-right-2 duration-200`}
         >
           <ToastIcon type={toast.type} />
           <span className="text-sm text-slate-700 flex-1">{toast.message}</span>
           <button
             onClick={() => removeToast(toast.id)}
-            className="text-slate-400 hover:text-slate-600 p-0.5"
+            className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition"
           >
             <X size={14} />
           </button>

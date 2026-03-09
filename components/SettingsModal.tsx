@@ -2,6 +2,11 @@ import React, { useMemo } from 'react';
 import { useStore } from '../store';
 import { X, User, Box, FileText, Circle, Square, Clock, Palette, ChevronDown, Activity, RefreshCw } from 'lucide-react';
 import { NODE_HEADER_COLORS, DEMAND_UNIT_LABELS, DemandUnit } from '../types';
+import {
+  getSharedAllocationTotals,
+  getWorkNodes,
+  WORKDAY_HOURS,
+} from '../capacityModel';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -16,10 +21,18 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const demandUnit = useStore((state) => state.demandUnit);
   const setDemandMode = useStore((state) => state.setDemandMode);
   const setDemandUnit = useStore((state) => state.setDemandUnit);
+  const capacityMode = useStore((state) => state.capacityMode);
+  const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
+  const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
+  const setCapacityMode = useStore((state) => state.setCapacityMode);
+  const setSharedCapacityInputMode = useStore((state) => state.setSharedCapacityInputMode);
+  const setSharedCapacityValue = useStore((state) => state.setSharedCapacityValue);
   const demandArrivalsGenerated = useStore((state) => state.demandArrivalsGenerated);
   const simulationSeed = useStore((state) => state.simulationSeed);
   const setSimulationSeed = useStore((state) => state.setSimulationSeed);
   const randomizeSimulationSeed = useStore((state) => state.randomizeSimulationSeed);
+  const kpiTargets = useStore((state) => state.kpiTargets);
+  const setKpiTargets = useStore((state) => state.setKpiTargets);
   const showSunMoonClock = useStore((state) => state.showSunMoonClock);
   const setShowSunMoonClock = useStore((state) => state.setShowSunMoonClock);
   const nodes = useStore((state) => state.nodes);
@@ -34,6 +47,22 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     }
     return total;
   }, [nodes]);
+  const allocationTotals = useMemo(
+    () =>
+      getSharedAllocationTotals(nodes as any, {
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
+      }),
+    [capacityMode, nodes, sharedCapacityInputMode, sharedCapacityValue],
+  );
+  const allocationUsesEqualSplit = allocationTotals.totalAllocatedPercent <= 0 && getWorkNodes(nodes).length > 0;
+  const effectiveAllocatedPercent = allocationUsesEqualSplit ? 100 : allocationTotals.totalAllocatedPercent;
+  const effectiveAllocatedHoursPerDay = allocationUsesEqualSplit
+    ? allocationTotals.totalSharedHoursPerDay
+    : allocationTotals.allocatedHoursPerDay;
+  const effectiveRemainingPercent = allocationUsesEqualSplit ? 0 : allocationTotals.remainingPercent;
+  const effectiveRemainingHoursPerDay = allocationUsesEqualSplit ? 0 : allocationTotals.remainingHoursPerDay;
 
   const DEMAND_UNIT_OPTIONS: DemandUnit[] = ['hour', 'day', 'week', 'month'];
 
@@ -62,11 +91,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] flex flex-col overflow-hidden border border-slate-200">
-        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+      <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] flex flex-col overflow-hidden border-2 border-slate-900 shadow-[6px_6px_0px_0px_rgba(15,23,42,0.9)]">
+        <div className="px-6 py-4 border-b-2 border-slate-900 flex justify-between items-center bg-slate-50">
           <h2 className="text-lg font-bold text-slate-800">Simulation Settings</h2>
-          <button onClick={onClose} className="p-1 hover:bg-slate-200 rounded text-slate-500">
-            <X size={20} />
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-200 rounded-xl border border-slate-200 text-slate-500 transition">
+            <X size={18} />
           </button>
         </div>
 
@@ -215,6 +244,127 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           </div>
 
           <div>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">Capacity Model</h3>
+
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCapacityMode('local')}
+                  className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                    capacityMode === 'local'
+                      ? 'bg-slate-800 border-slate-800 text-white'
+                      : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                  }`}
+                >
+                  Local Resources
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCapacityMode('sharedAllocation')}
+                  className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                    capacityMode === 'sharedAllocation'
+                      ? 'bg-blue-600 border-blue-600 text-white'
+                      : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                  }`}
+                >
+                  Shared Allocation
+                </button>
+              </div>
+
+              {capacityMode === 'sharedAllocation' ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSharedCapacityInputMode('fte')}
+                      className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        sharedCapacityInputMode === 'fte'
+                          ? 'bg-slate-800 border-slate-800 text-white'
+                          : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                      }`}
+                    >
+                      FTE
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSharedCapacityInputMode('hours')}
+                      className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        sharedCapacityInputMode === 'hours'
+                          ? 'bg-slate-800 border-slate-800 text-white'
+                          : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                      }`}
+                    >
+                      Hours / Day
+                    </button>
+                  </div>
+
+                  <label className="block">
+                    <span className="text-xs text-slate-400 font-bold mb-1 block">
+                      {sharedCapacityInputMode === 'fte' ? 'Total effective team capacity' : 'Total shared hours per day'}
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      step={sharedCapacityInputMode === 'fte' ? '0.25' : '1'}
+                      value={sharedCapacityValue}
+                      onChange={(event) => setSharedCapacityValue(Number(event.target.value))}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </label>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Total Budget</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-700">{allocationTotals.totalSharedHoursPerDay.toFixed(1)} h/day</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Allocated %</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-700">{effectiveAllocatedPercent.toFixed(0)}%</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Allocated h/day</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-700">{effectiveAllocatedHoursPerDay.toFixed(1)}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Remaining %</div>
+                      <div className={`mt-1 text-sm font-semibold ${effectiveRemainingPercent < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+                        {effectiveRemainingPercent.toFixed(0)}%
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Remaining h/day</div>
+                      <div className={`mt-1 text-sm font-semibold ${effectiveRemainingHoursPerDay < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+                        {effectiveRemainingHoursPerDay.toFixed(1)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-500">
+                    {sharedCapacityInputMode === 'fte'
+                      ? `1 FTE is treated as ${WORKDAY_HOURS} hours per working day.`
+                      : 'Each work node consumes a percentage share of this daily team budget.'}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Changing total shared capacity rescales the hour budget. The percentage budget only changes when you edit node allocations.
+                  </p>
+                  <p className={`text-xs ${allocationTotals.isOverAllocated ? 'text-amber-700' : 'text-slate-500'}`}>
+                    {allocationUsesEqualSplit
+                      ? 'All work-node allocations are currently 0%, so the simulator will split capacity evenly across start and process nodes until you assign percentages.'
+                      : allocationTotals.isOverAllocated
+                        ? 'Allocations above 100% are allowed for planning, but they over-commit the shared team and will make the flow optimistic.'
+                        : 'Each start/process node can claim a percentage of the shared team budget in its node configuration.'}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  Local Resources keeps capacity attached to each node. Use Shared Allocation when the same people divide time across multiple steps.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div>
             <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">Simulation Seed</h3>
 
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
@@ -237,6 +387,56 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               </button>
               <p className="text-xs text-slate-500">
                 Reset and rerun with the same seed to replay the same stochastic outcomes.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">KPI Targets</h3>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label className="block">
+                  <span className="text-xs text-slate-400 font-bold mb-1 block">Lead Time Target</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={kpiTargets.leadTime}
+                    onChange={(event) => setKpiTargets({ leadTime: Number(event.target.value) })}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <span className="mt-1 block text-[10px] text-slate-400">Minutes</span>
+                </label>
+
+                <label className="block">
+                  <span className="text-xs text-slate-400 font-bold mb-1 block">PCE Target</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={kpiTargets.processEfficiency}
+                    onChange={(event) => setKpiTargets({ processEfficiency: Number(event.target.value) })}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <span className="mt-1 block text-[10px] text-slate-400">%</span>
+                </label>
+
+                <label className="block">
+                  <span className="text-xs text-slate-400 font-bold mb-1 block">Utilisation Target</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={kpiTargets.resourceUtilization}
+                    onChange={(event) => setKpiTargets({ resourceUtilization: Number(event.target.value) })}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <span className="mt-1 block text-[10px] text-slate-400">%</span>
+                </label>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                The KPI dashboard can compare hourly, daily, weekly, or monthly averages against these targets.
               </p>
             </div>
           </div>
@@ -300,8 +500,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
         </div>
 
-        <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
-            <button onClick={onClose} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-900 transition">
+        <div className="p-4 bg-slate-50 border-t-2 border-slate-900 flex justify-end">
+            <button onClick={onClose} className="bg-slate-950 text-white px-5 py-2.5 rounded-xl text-sm font-bold border-2 border-slate-900 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] hover:bg-slate-800 transition active:translate-y-[1px] active:shadow-none">
                 Done
             </button>
         </div>

@@ -50,6 +50,8 @@ export interface WorkingHoursConfig {
 }
 
 export type FlowMode = 'push' | 'pull';
+export type CapacityMode = 'local' | 'sharedAllocation';
+export type SharedCapacityInputMode = 'fte' | 'hours';
 
 export const DEFAULT_WORKING_HOURS: WorkingHoursConfig = {
   enabled: true,
@@ -61,6 +63,7 @@ export interface ProcessNodeData {
   label: string;
   processingTime: number; // Time to process one item (in ticks)
   resources: number; // Concurrent capacity
+  allocationPercent?: number; // Share of global capacity used by this node when shared allocation mode is enabled
   batchSize?: number; // Items that must begin together when this node batches work
   flowMode?: FlowMode; // Push accepts immediately; pull caps local WIP at resources and blocks upstream overflow
   pullOpenSlotsRequired?: number; // Legacy saved setting retained for compatibility; pull now uses resource count as its cap
@@ -137,6 +140,48 @@ export interface ItemConfig {
   shape: 'circle' | 'square' | 'rounded';
   icon: 'none' | 'user' | 'box' | 'file';
 }
+
+export type KpiPeriod = 'hour' | 'day' | 'week' | 'month';
+
+export const KPI_PERIODS: KpiPeriod[] = ['hour', 'day', 'week', 'month'];
+
+export interface KpiTargets {
+  leadTime: number; // ticks
+  processEfficiency: number; // percentage
+  resourceUtilization: number; // percentage
+}
+
+export const DEFAULT_KPI_TARGETS: KpiTargets = {
+  leadTime: 240,
+  processEfficiency: 30,
+  resourceUtilization: 85,
+};
+
+export interface KpiBucket {
+  period: KpiPeriod;
+  periodIndex: number;
+  startTick: number;
+  endTick: number;
+  label: string;
+  completions: number;
+  leadTimeTotal: number;
+  valueAddedTotal: number;
+  leadTimeAvg: number;
+  processEfficiencyAvg: number;
+  busyResourceTicks: number;
+  availableResourceTicks: number;
+  resourceUtilizationAvg: number;
+}
+
+export type KpiHistoryByPeriod = Record<KpiPeriod, KpiBucket[]>;
+
+export interface ResourceUtilizationSample {
+  tick: number;
+  busyResourceTicks: number;
+  availableResourceTicks: number;
+}
+
+export type NodeUtilizationHistoryByNode = Record<string, ResourceUtilizationSample[]>;
 
 // Time unit configuration for realistic VSM metrics
 export interface TimeUnitConfig {
@@ -316,7 +361,11 @@ export interface CanvasFlowData {
   metricsWindowCompletions: number;
   demandMode: DemandMode;
   demandUnit: DemandUnit;
+  capacityMode: CapacityMode;
+  sharedCapacityInputMode: SharedCapacityInputMode;
+  sharedCapacityValue: number;
   simulationSeed: number;
+  kpiTargets: KpiTargets;
 }
 
 export interface SavedCanvas {
@@ -382,9 +431,12 @@ export interface SimulationState {
   demandAccumulatorByNode: Record<string, number>;
   demandOpenTicksByNode: Record<string, number>;
   periodCompleted: number;
+  kpiHistoryByPeriod: KpiHistoryByPeriod;
+  nodeUtilizationHistoryByNode: NodeUtilizationHistoryByNode;
 
   // Performance: Pre-computed derived state
   itemsByNode: Map<string, ProcessItem[]>;
+  blockedCountsByTarget: Map<string, number>;
   itemCounts: ItemCounts;
   visualTransfers: VisualTransfer[];
 
@@ -393,6 +445,9 @@ export interface SimulationState {
   defaultHeaderColor: string; // Global default header color for nodes (hex)
   autoInjectionEnabled: boolean;
   timeUnit: string; // Key for TIME_UNIT_PRESETS
+  capacityMode: CapacityMode;
+  sharedCapacityInputMode: SharedCapacityInputMode;
+  sharedCapacityValue: number;
 
   // Real-time simulation configuration
   durationPreset: string; // Key for DURATION_PRESETS
@@ -402,11 +457,14 @@ export interface SimulationState {
   simulationProgress: number; // 0 to 100
   autoStopEnabled: boolean; // Stop when targetDuration reached
   simulationSeed: number;
+  kpiTargets: KpiTargets;
   showSunMoonClock: boolean;
   readOnlyMode: boolean;
   runStartedAtMs: number | null;
   lastRunSummary: RunSummary | null;
   lastLoggedRunKey: string | null;
+  lastAutoSavedAt: number | null;
+  canUndo: boolean;
 
   // Actions
   setNodes: (nodes: AppNode[]) => void;
@@ -430,13 +488,18 @@ export interface SimulationState {
   setMetricsWindowCompletions: (count: number) => void;
   setDemandMode: (mode: DemandMode) => void;
   setDemandUnit: (unit: DemandUnit) => void;
+  setCapacityMode: (mode: CapacityMode) => void;
+  setSharedCapacityInputMode: (mode: SharedCapacityInputMode) => void;
+  setSharedCapacityValue: (value: number) => void;
   setDurationPreset: (preset: string) => void;
   setSpeedPreset: (preset: string) => void;
   setAutoStop: (enabled: boolean) => void;
   setSimulationSeed: (seed: number) => void;
+  setKpiTargets: (targets: Partial<KpiTargets>) => void;
   randomizeSimulationSeed: () => void;
   setShowSunMoonClock: (enabled: boolean) => void;
   setReadOnlyMode: (enabled: boolean) => void;
+  undoEditorChange: () => void;
 
   // Simulation Actions
   startSimulation: () => void;
@@ -468,7 +531,7 @@ export interface SimulationState {
   loadScenario: (scenarioKey: string) => void;
 
   // Canvas Management
-  saveCanvasToDb: () => Promise<void>;
+  saveCanvasToDb: (options?: { silent?: boolean; autosave?: boolean; skipRefresh?: boolean }) => Promise<void>;
   loadCanvasFromDb: (id: string) => Promise<void>;
   newCanvas: () => void;
   renameCurrentCanvas: (name: string) => Promise<void>;

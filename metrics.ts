@@ -1,4 +1,16 @@
-import { CompletionMetrics, ProcessItem, ItemStatus, TICKS_PER_HOUR } from './types';
+import {
+  AppNode,
+  CompletionMetrics,
+  ItemStatus,
+  KpiHistoryByPeriod,
+  KpiPeriod,
+  NodeUtilizationHistoryByNode,
+  ProcessItem,
+  ProcessNodeData,
+  ResourceUtilizationSample,
+  TICKS_PER_HOUR,
+} from './types';
+import { getLocalCapacityUnits } from './capacityModel';
 
 export interface MetricsWindowConfig {
   windowSize?: number;
@@ -6,6 +18,7 @@ export interface MetricsWindowConfig {
 }
 
 const DEFAULT_COMPLETION_WINDOW = 50;
+export const NODE_UTILIZATION_ROLLING_WINDOW_TICKS = TICKS_PER_HOUR;
 
 const getCompleted = (items: ProcessItem[], metricsEpoch?: number): ProcessItem[] => {
   return items.filter(
@@ -134,3 +147,72 @@ export const computeThroughputFromCompletions = (items: ProcessItem[], config: M
 };
 
 export const formatCompletionWindowLabel = (windowSize: number): string => `last ${windowSize} completions`;
+
+export const computeUtilizationFromResourceTicks = (
+  busyResourceTicks: number,
+  availableResourceTicks: number,
+): number => {
+  if (!Number.isFinite(availableResourceTicks) || availableResourceTicks <= 0) return 0;
+  if (!Number.isFinite(busyResourceTicks) || busyResourceTicks <= 0) return 0;
+  return (busyResourceTicks / availableResourceTicks) * 100;
+};
+
+export const computeNodeUtilization = (items: ProcessItem[], resources: number): number => {
+  const safeResources = getLocalCapacityUnits(resources || 0);
+  if (safeResources <= 0) return 0;
+  const busyCount = items.reduce(
+    (count, item) => count + (item.status === ItemStatus.PROCESSING ? 1 : 0),
+    0,
+  );
+  return (busyCount / safeResources) * 100;
+};
+
+export const computeOverallUtilization = (
+  nodes: AppNode[],
+  itemsByNode: Map<string, ProcessItem[]>,
+): number => {
+  let totalBusy = 0;
+  let totalCapacity = 0;
+
+  for (const node of nodes) {
+    if (node.type !== 'processNode' && node.type !== 'startNode') continue;
+    const data = node.data as ProcessNodeData;
+    const capacity = getLocalCapacityUnits(data.resources || 0);
+    totalCapacity += capacity;
+    totalBusy += (itemsByNode.get(node.id) || []).reduce(
+      (count, item) => count + (item.status === ItemStatus.PROCESSING ? 1 : 0),
+      0,
+    );
+  }
+
+  if (totalCapacity <= 0) return 0;
+  return (totalBusy / totalCapacity) * 100;
+};
+
+export const computeRollingNodeUtilization = (
+  samples: ResourceUtilizationSample[],
+): number => {
+  let busyResourceTicks = 0;
+  let availableResourceTicks = 0;
+
+  for (const sample of samples) {
+    busyResourceTicks += sample.busyResourceTicks;
+    availableResourceTicks += sample.availableResourceTicks;
+  }
+
+  return computeUtilizationFromResourceTicks(busyResourceTicks, availableResourceTicks);
+};
+
+export const getRollingNodeUtilization = (
+  historyByNode: NodeUtilizationHistoryByNode,
+  nodeId: string,
+): number => computeRollingNodeUtilization(historyByNode[nodeId] || []);
+
+export const getLatestKpiUtilizationAverage = (
+  historyByPeriod: KpiHistoryByPeriod,
+  period: KpiPeriod,
+): number => {
+  const buckets = historyByPeriod[period] || [];
+  const latestBucket = buckets[buckets.length - 1];
+  return latestBucket?.resourceUtilizationAvg || 0;
+};

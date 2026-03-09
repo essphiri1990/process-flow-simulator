@@ -54,7 +54,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onDismiss, onQuickStart }) => {
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200">
+      <div className="bg-white rounded-2xl max-w-lg w-full overflow-hidden border-2 border-slate-900 shadow-[6px_6px_0px_0px_rgba(15,23,42,0.9)]">
         {/* Header */}
         <div className="px-6 pt-6 pb-2 flex justify-between items-start">
           <div>
@@ -63,7 +63,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onDismiss, onQuickStart }) => {
           </div>
           <button
             onClick={handleComplete}
-            className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition"
+            className="p-1.5 hover:bg-slate-100 rounded-xl border border-slate-200 text-slate-400 hover:text-slate-600 transition"
             title="Skip tutorial"
           >
             <X size={18} />
@@ -72,9 +72,9 @@ const Onboarding: React.FC<OnboardingProps> = ({ onDismiss, onQuickStart }) => {
 
         {/* Step Content */}
         <div className="px-6 py-6">
-          <div className="bg-slate-50 rounded-xl p-6 border border-slate-100">
+          <div className="bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
             <div className="flex items-start gap-4">
-              <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center shrink-0">
+              <div className="w-12 h-12 rounded-xl bg-white border-2 border-slate-900 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] flex items-center justify-center shrink-0">
                 {steps[currentStep].icon}
               </div>
               <div>
@@ -106,7 +106,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onDismiss, onQuickStart }) => {
             {onQuickStart && (
               <button
                 onClick={handleQuickStart}
-                className="px-4 py-2 text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-xl hover:bg-amber-100 transition flex items-center gap-2"
+                className="px-4 py-2 text-sm font-semibold text-amber-700 bg-amber-50 border-2 border-amber-300 rounded-xl hover:bg-amber-100 transition flex items-center gap-2 shadow-[2px_2px_0px_0px_rgba(217,119,6,0.3)] active:translate-y-[1px] active:shadow-none"
                 title="Load a ready-to-run coffee process example"
               >
                 <Coffee size={14} />
@@ -121,7 +121,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onDismiss, onQuickStart }) => {
             </button>
             <button
               onClick={handleNext}
-              className="px-5 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition flex items-center gap-2 shadow-sm"
+              className="px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold border-2 border-blue-700 hover:bg-blue-700 transition flex items-center gap-2 shadow-[2px_2px_0px_0px_rgba(29,78,216,0.8)] active:translate-y-[1px] active:shadow-none"
             >
               {currentStep < steps.length - 1 ? (
                 <>Next <ArrowRight size={14} /></>

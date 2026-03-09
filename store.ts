@@ -10,6 +10,7 @@ import {
   MarkerType,
 } from 'reactflow';
 import {
+  DEFAULT_KPI_TARGETS,
   SimulationState,
   ProcessNode,
   StartNode,
@@ -25,10 +26,18 @@ import {
   SPEED_PRESETS,
   applyVariability,
   CanvasFlowData,
+  CapacityMode,
   DEMAND_UNIT_TICKS,
   DemandMode,
   DemandUnit,
   DEFAULT_WORKING_HOURS,
+  KpiBucket,
+  KpiHistoryByPeriod,
+  KpiPeriod,
+  KpiTargets,
+  KPI_PERIODS,
+  NodeUtilizationHistoryByNode,
+  SharedCapacityInputMode,
   WorkingHoursConfig,
   RunSummary,
   VisualTransfer,
@@ -39,7 +48,14 @@ import {
   normalizeWorkingHours,
 } from './timeModel';
 import { showToast } from './components/Toast';
-import { computeLeadMetrics, computeThroughputFromCompletions } from './metrics';
+import { computeLeadMetrics, computeThroughputFromCompletions, NODE_UTILIZATION_ROLLING_WINDOW_TICKS } from './metrics';
+import {
+  clampAllocationPercent,
+  DEFAULT_SHARED_CAPACITY_INPUT_MODE,
+  DEFAULT_SHARED_CAPACITY_VALUE,
+  getLocalCapacityUnits,
+  getNodeCapacityProfile,
+} from './capacityModel';
 import { getProcessBoxSdk } from './processBoxSdk';
 import { createRandomSeed, nextMulberry32, normalizeSeed } from './rng';
 import {
@@ -78,10 +94,12 @@ const nextSimulationRandom = () => {
 };
 
 const DEFAULT_SOURCE_CONFIG = { enabled: false, interval: 20, batchSize: 1 };
-const DEFAULT_NODE_BATCH_SIZE = 1;
+const DEFAULT_NODE_BATCH_SIZE = 0;
 const DEFAULT_NODE_FLOW_MODE = 'push' as const;
 const DEFAULT_PULL_OPEN_SLOTS_REQUIRED = 1;
 const MAX_VISUAL_TRANSFERS = 120;
+const MAX_UNDO_SNAPSHOTS = 40;
+const AUTOSAVE_DELAY_MS = 8000;
 const SUN_MOON_CLOCK_PREF_KEY = 'pf-show-sun-moon-clock';
 const createDefaultWorkingHours = (): WorkingHoursConfig => ({ ...DEFAULT_WORKING_HOURS });
 const createEmptyItemCounts = () => ({
@@ -92,6 +110,164 @@ const createEmptyItemCounts = () => ({
   processing: 0,
   stuck: 0,
 });
+const createEmptyKpiHistory = (): KpiHistoryByPeriod => ({
+  hour: [],
+  day: [],
+  week: [],
+  month: [],
+});
+const createEmptyNodeUtilizationHistory = (): NodeUtilizationHistoryByNode => ({});
+
+type EditorSnapshot = Pick<
+  SimulationState,
+  | 'nodes'
+  | 'edges'
+  | 'itemConfig'
+  | 'defaultHeaderColor'
+  | 'durationPreset'
+  | 'speedPreset'
+  | 'autoStopEnabled'
+  | 'metricsWindowCompletions'
+  | 'demandMode'
+  | 'demandUnit'
+  | 'capacityMode'
+  | 'sharedCapacityInputMode'
+  | 'sharedCapacityValue'
+  | 'simulationSeed'
+  | 'kpiTargets'
+  | 'currentCanvasId'
+  | 'currentCanvasName'
+>;
+
+const undoSnapshots: EditorSnapshot[] = [];
+let autosaveTimer: number | null = null;
+
+const cloneSerializable = <T>(value: T): T => {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+};
+
+const createEditorSnapshot = (state: EditorSnapshot): EditorSnapshot =>
+  cloneSerializable({
+    nodes: state.nodes,
+    edges: state.edges,
+    itemConfig: state.itemConfig,
+    defaultHeaderColor: state.defaultHeaderColor,
+    durationPreset: state.durationPreset,
+    speedPreset: state.speedPreset,
+    autoStopEnabled: state.autoStopEnabled,
+    metricsWindowCompletions: state.metricsWindowCompletions,
+    demandMode: state.demandMode,
+    demandUnit: state.demandUnit,
+    capacityMode: state.capacityMode,
+    sharedCapacityInputMode: state.sharedCapacityInputMode,
+    sharedCapacityValue: state.sharedCapacityValue,
+    simulationSeed: state.simulationSeed,
+    kpiTargets: state.kpiTargets,
+    currentCanvasId: state.currentCanvasId,
+    currentCanvasName: state.currentCanvasName,
+  });
+
+const getKpiPeriodTicks = (period: KpiPeriod): number => {
+  switch (period) {
+    case 'hour':
+      return DEMAND_UNIT_TICKS.hour;
+    case 'day':
+      return DEMAND_UNIT_TICKS.day;
+    case 'week':
+      return DEMAND_UNIT_TICKS.week;
+    case 'month':
+      return DEMAND_UNIT_TICKS.month;
+  }
+};
+
+const getKpiPeriodLabel = (period: KpiPeriod, periodIndex: number): string => {
+  const displayIndex = periodIndex + 1;
+  switch (period) {
+    case 'hour':
+      return `H${displayIndex}`;
+    case 'day':
+      return `D${displayIndex}`;
+    case 'week':
+      return `W${displayIndex}`;
+    case 'month':
+      return `M${displayIndex}`;
+  }
+};
+
+const upsertKpiBucket = (
+  history: KpiHistoryByPeriod,
+  period: KpiPeriod,
+  tick: number,
+  patch: Partial<Pick<KpiBucket, 'completions' | 'leadTimeTotal' | 'valueAddedTotal' | 'busyResourceTicks' | 'availableResourceTicks'>>,
+): KpiHistoryByPeriod => {
+  const nextHistory = { ...history };
+  const ticksPerPeriod = getKpiPeriodTicks(period);
+  const periodIndex = Math.floor(Math.max(0, tick) / ticksPerPeriod);
+  const startTick = periodIndex * ticksPerPeriod;
+  const endTick = startTick + ticksPerPeriod;
+  const currentBuckets = [...nextHistory[period]];
+  const lastBucket = currentBuckets[currentBuckets.length - 1];
+  const baseBucket: KpiBucket =
+    lastBucket && lastBucket.periodIndex === periodIndex
+      ? lastBucket
+      : {
+          period,
+          periodIndex,
+          startTick,
+          endTick,
+          label: getKpiPeriodLabel(period, periodIndex),
+          completions: 0,
+          leadTimeTotal: 0,
+          valueAddedTotal: 0,
+          leadTimeAvg: 0,
+          processEfficiencyAvg: 0,
+          busyResourceTicks: 0,
+          availableResourceTicks: 0,
+          resourceUtilizationAvg: 0,
+        };
+
+  const nextBucket: KpiBucket = {
+    ...baseBucket,
+    completions: baseBucket.completions + (patch.completions || 0),
+    leadTimeTotal: baseBucket.leadTimeTotal + (patch.leadTimeTotal || 0),
+    valueAddedTotal: baseBucket.valueAddedTotal + (patch.valueAddedTotal || 0),
+    busyResourceTicks: baseBucket.busyResourceTicks + (patch.busyResourceTicks || 0),
+    availableResourceTicks: baseBucket.availableResourceTicks + (patch.availableResourceTicks || 0),
+    leadTimeAvg:
+      baseBucket.completions + (patch.completions || 0) > 0
+        ? (baseBucket.leadTimeTotal + (patch.leadTimeTotal || 0)) /
+          (baseBucket.completions + (patch.completions || 0))
+        : 0,
+    processEfficiencyAvg:
+      baseBucket.leadTimeTotal + (patch.leadTimeTotal || 0) > 0
+        ? ((baseBucket.valueAddedTotal + (patch.valueAddedTotal || 0)) /
+            (baseBucket.leadTimeTotal + (patch.leadTimeTotal || 0))) *
+          100
+        : 0,
+    resourceUtilizationAvg:
+      baseBucket.availableResourceTicks + (patch.availableResourceTicks || 0) > 0
+        ? ((baseBucket.busyResourceTicks + (patch.busyResourceTicks || 0)) /
+            (baseBucket.availableResourceTicks + (patch.availableResourceTicks || 0))) *
+          100
+        : 0,
+  };
+
+  if (lastBucket && lastBucket.periodIndex === periodIndex) {
+    currentBuckets[currentBuckets.length - 1] = nextBucket;
+  } else {
+    currentBuckets.push(nextBucket);
+  }
+  nextHistory[period] = currentBuckets;
+  return nextHistory;
+};
+
+const clampPercent = (value: number): number => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+};
 
 const readShowSunMoonClockPreference = () => {
   if (typeof window === 'undefined') return true;
@@ -115,7 +291,9 @@ const persistShowSunMoonClockPreference = (enabled: boolean) => {
 
 const getNodeBatchSize = (data: Partial<ProcessNodeData> | undefined) => {
   const raw = Number(data?.batchSize);
-  return Number.isFinite(raw) && raw >= 1 ? Math.round(raw) : DEFAULT_NODE_BATCH_SIZE;
+  if (!Number.isFinite(raw)) return DEFAULT_NODE_BATCH_SIZE;
+  const rounded = Math.max(0, Math.round(raw));
+  return rounded > 1 ? rounded : 0;
 };
 
 const getNodeFlowMode = (data: Partial<ProcessNodeData> | undefined) =>
@@ -140,12 +318,20 @@ const normalizeProcessNodeSettings = (
   const batchSize = getNodeBatchSize(merged);
   const pullOpenSlotsRequired = getNodePullOpenSlotsRequired(merged);
 
-  return {
+  const normalized: Partial<ProcessNodeData> = {
     ...nextData,
-    batchSize: maxSlots ? Math.min(batchSize, maxSlots) : batchSize,
+    batchSize: maxSlots
+      ? (batchSize > 1 ? Math.min(batchSize, maxSlots) : 0)
+      : batchSize,
     flowMode: getNodeFlowMode(merged),
     pullOpenSlotsRequired: maxSlots ? Math.min(pullOpenSlotsRequired, maxSlots) : pullOpenSlotsRequired,
   };
+
+  if (Object.prototype.hasOwnProperty.call(nextData, 'allocationPercent')) {
+    normalized.allocationPercent = clampAllocationPercent(Number(merged.allocationPercent));
+  }
+
+  return normalized;
 };
 
 const createQueuedItem = (targetNodeId: string, tick: number, metricsEpoch: number): ProcessItem => ({
@@ -183,7 +369,10 @@ const buildRunStateReset = () => ({
   demandAccumulatorByNode: {} as Record<string, number>,
   demandOpenTicksByNode: {} as Record<string, number>,
   periodCompleted: 0,
+  kpiHistoryByPeriod: createEmptyKpiHistory(),
+  nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
   itemsByNode: new Map<string, ProcessItem[]>(),
+  blockedCountsByTarget: new Map<string, number>(),
   itemCounts: createEmptyItemCounts(),
   visualTransfers: [] as VisualTransfer[],
   runStartedAtMs: null,
@@ -239,6 +428,7 @@ const shouldResetMetricsForNodeData = (
     return true;
   }
   if ('demandTarget' in nextPartial && nextPartial.demandTarget !== prev.demandTarget) return true;
+  if ('allocationPercent' in nextPartial && nextPartial.allocationPercent !== prev.allocationPercent) return true;
   if ('workingHours' in nextPartial) {
     const nextWorking = nextPartial.workingHours
       ? { ...(prev.workingHours || DEFAULT_WORKING_HOURS), ...nextPartial.workingHours }
@@ -262,7 +452,9 @@ const shouldResetMetricsForNodeData = (
 
 const buildMetricsReset = (state: SimulationState) => ({
   metricsEpoch: state.metricsEpoch + 1,
-  metricsEpochTick: state.tickCount
+  metricsEpochTick: state.tickCount,
+  kpiHistoryByPeriod: createEmptyKpiHistory(),
+  nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
 });
 
 const getDemandDurationPreset = (unit: DemandUnit): string => {
@@ -376,7 +568,11 @@ const createFlowSnapshot = (
     | 'metricsWindowCompletions'
     | 'demandMode'
     | 'demandUnit'
+    | 'capacityMode'
+    | 'sharedCapacityInputMode'
+    | 'sharedCapacityValue'
     | 'simulationSeed'
+    | 'kpiTargets'
   >,
   options: {
     workspaceId?: string | null;
@@ -394,7 +590,11 @@ const createFlowSnapshot = (
   metricsWindowCompletions: state.metricsWindowCompletions,
   demandMode: state.demandMode,
   demandUnit: state.demandUnit,
+  capacityMode: state.capacityMode,
+  sharedCapacityInputMode: state.sharedCapacityInputMode,
+  sharedCapacityValue: state.sharedCapacityValue,
   simulationSeed: state.simulationSeed,
+  kpiTargets: state.kpiTargets,
   canvasName: normalizeCanvasName(options.canvasName),
 });
 
@@ -433,14 +633,30 @@ const applyCloudFlowSnapshot = (
   const speedConfig = SPEED_PRESETS.find((s) => s.key === snapshot.speedPreset) || SPEED_PRESETS[1];
   const demandMode = (snapshot.demandMode as DemandMode) || 'auto';
   const demandUnit = (snapshot.demandUnit as DemandUnit) || 'week';
+  const capacityMode = (snapshot.capacityMode as CapacityMode) || 'local';
+  const sharedCapacityInputMode =
+    (snapshot.sharedCapacityInputMode as SharedCapacityInputMode) || DEFAULT_SHARED_CAPACITY_INPUT_MODE;
+  const sharedCapacityValue = Number.isFinite(snapshot.sharedCapacityValue)
+    ? Math.max(0, Number(snapshot.sharedCapacityValue))
+    : DEFAULT_SHARED_CAPACITY_VALUE;
   const simulationSeed = normalizeSeed(snapshot.simulationSeed, getState().simulationSeed);
+  const kpiTargets = {
+    ...getState().kpiTargets,
+    ...(snapshot.kpiTargets || {}),
+  };
   const nextCanvasName = normalizeCanvasName(options.canvasName || snapshot.canvasName || getState().currentCanvasName);
+  const normalizedEdges = normalizeFlowEdgeHandles<Edge>(snapshot.nodes as AppNode[], snapshot.edges as Edge[]);
+  const nextNodes = resetRuntimeNodeState(snapshot.nodes as AppNode[], normalizedEdges, {
+    capacityMode,
+    sharedCapacityInputMode,
+    sharedCapacityValue,
+  });
   resetSimulationRng(simulationSeed);
   clearVisualTransferCleanupTimers();
 
   setState({
-    nodes: snapshot.nodes,
-    edges: normalizeFlowEdgeHandles(snapshot.nodes as AppNode[], snapshot.edges),
+    nodes: nextNodes,
+    edges: normalizedEdges,
     itemConfig: snapshot.itemConfig || getState().itemConfig,
     defaultHeaderColor: snapshot.defaultHeaderColor || getState().defaultHeaderColor,
     durationPreset: snapshot.durationPreset || 'unlimited',
@@ -453,8 +669,12 @@ const applyCloudFlowSnapshot = (
       : getState().metricsWindowCompletions,
     demandMode,
     demandUnit,
+    capacityMode,
+    sharedCapacityInputMode,
+    sharedCapacityValue,
     demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
     simulationSeed,
+    kpiTargets,
     ...buildRunStateReset(),
     currentCanvasId:
       options.canvasId === undefined
@@ -511,9 +731,9 @@ const SCENARIOS = {
       { id: 'e2', source: 'design', target: 'dev', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
       { id: 'e3', source: 'dev', target: 'review', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
       { id: 'e4-pass', source: 'review', target: 'qa', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e4-fail', source: 'review', target: 'dev', type: 'processEdge', animated: false, style: { stroke: '#f87171' }, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e4-fail', source: 'review', target: 'dev', sourceHandle: 'top-source', targetHandle: 'top-target', type: 'processEdge', animated: false, style: { stroke: '#f87171' }, markerEnd: { type: MarkerType.ArrowClosed } },
       { id: 'e5-pass', source: 'qa', target: 'deploy', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e5-fail', source: 'qa', target: 'dev', type: 'processEdge', animated: false, style: { stroke: '#f87171' }, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e5-fail', source: 'qa', target: 'dev', sourceHandle: 'top-source', targetHandle: 'top-target', type: 'processEdge', animated: false, style: { stroke: '#f87171' }, markerEnd: { type: MarkerType.ArrowClosed } },
       { id: 'e6', source: 'deploy', target: 'end-live', type: 'processEdge', animated: false, markerEnd: { type: MarkerType.ArrowClosed } },
     ]
   },
@@ -591,6 +811,7 @@ const initialEdges: Edge[] = normalizeFlowEdgeHandles(initialNodes, SCENARIOS['d
 // Helper: Build itemsByNode map and counts in single pass
 const computeDerivedState = (items: ProcessItem[]) => {
   const itemsByNode = new Map<string, ProcessItem[]>();
+  const blockedCountsByTarget = new Map<string, number>();
   let wip = 0, completed = 0, failed = 0;
   let queued = 0, processing = 0, stuck = 0;
 
@@ -607,6 +828,12 @@ const computeDerivedState = (items: ProcessItem[]) => {
       }
       if (item.status === ItemStatus.QUEUED) {
         queued++;
+        if (item.handoffTargetNodeId) {
+          blockedCountsByTarget.set(
+            item.handoffTargetNodeId,
+            (blockedCountsByTarget.get(item.handoffTargetNodeId) || 0) + 1,
+          );
+        }
       } else if (item.status === ItemStatus.PROCESSING) {
         processing++;
       } else {
@@ -622,7 +849,243 @@ const computeDerivedState = (items: ProcessItem[]) => {
     }
   }
 
-  return { itemsByNode, itemCounts: { wip, completed, failed, queued, processing, stuck } };
+  return { itemsByNode, blockedCountsByTarget, itemCounts: { wip, completed, failed, queued, processing, stuck } };
+};
+
+const buildEdgesBySource = (edges: Edge[]) => {
+  const edgesBySource = new Map<string, Edge[]>();
+  for (const edge of edges) {
+    const existing = edgesBySource.get(edge.source);
+    if (existing) {
+      existing.push(edge);
+    } else {
+      edgesBySource.set(edge.source, [edge]);
+    }
+  }
+  return edgesBySource;
+};
+
+const normalizeGraphEdges = (nodes: AppNode[], edges: Edge[]) => {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const connectedEdges = edges.filter(
+    (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
+  );
+  return normalizeFlowEdgeHandles(nodes, connectedEdges);
+};
+
+const reconcileItemsForGraph = (
+  items: ProcessItem[],
+  nodes: AppNode[],
+  edges: Edge[],
+) => {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const retainedItems = items.filter(
+    (item) => item.currentNodeId === null || nodeIds.has(item.currentNodeId),
+  );
+  return reconcileBlockedItemsForFlow(retainedItems, nodes, edges);
+};
+
+const buildNodeCapacityProfiles = (
+  nodes: AppNode[],
+  settings: {
+    capacityMode: CapacityMode;
+    sharedCapacityInputMode: SharedCapacityInputMode;
+    sharedCapacityValue: number;
+  }
+) => {
+  const profiles = new Map<string, ReturnType<typeof getNodeCapacityProfile>>();
+  for (const node of nodes) {
+    if (node.type === 'annotationNode') continue;
+    profiles.set(node.id, getNodeCapacityProfile(node, nodes, settings));
+  }
+  return profiles;
+};
+
+const computeValidationErrorForNode = (
+  node: AppNode,
+  edgesBySource: Map<string, Edge[]>,
+  nodeCapacityProfiles: Map<string, ReturnType<typeof getNodeCapacityProfile>>
+): string | undefined => {
+  if (node.type === 'annotationNode' || node.type === 'endNode') return undefined;
+
+  const pData = node.data as ProcessNodeData;
+  const capacityProfile = nodeCapacityProfiles.get(node.id);
+  let validationError: string | undefined;
+  const outgoing = edgesBySource.get(node.id);
+
+  if (!outgoing || outgoing.length === 0) {
+    validationError = 'No Output Path';
+  }
+  if (capacityProfile?.usesSharedAllocation) {
+    if (capacityProfile.availableCapacityPerTick <= 0) {
+      validationError = 'Zero Allocation';
+    }
+    if (node.type === 'processNode' && getNodeBatchSize(pData) > 1) {
+      validationError = 'Batch needs Local Cap';
+    }
+  } else if (getLocalCapacityUnits(pData.resources) === 0) {
+    validationError = 'Zero Capacity';
+  }
+  if (
+    !capacityProfile?.usesSharedAllocation &&
+    node.type === 'processNode' &&
+    getLocalCapacityUnits(pData.resources) > 0 &&
+    getNodeBatchSize(pData) > getLocalCapacityUnits(pData.resources)
+  ) {
+    validationError = 'Batch > Capacity';
+  }
+
+  return validationError;
+};
+
+const applyValidationToNodes = (
+  nodes: AppNode[],
+  edges: Edge[],
+  settings: {
+    capacityMode: CapacityMode;
+    sharedCapacityInputMode: SharedCapacityInputMode;
+    sharedCapacityValue: number;
+  }
+): AppNode[] => {
+  const edgesBySource = buildEdgesBySource(edges);
+  const nodeCapacityProfiles = buildNodeCapacityProfiles(nodes, settings);
+
+  return nodes.map((node) => {
+    if (node.type === 'annotationNode') return node;
+    const nextValidationError = computeValidationErrorForNode(node, edgesBySource, nodeCapacityProfiles);
+    if ((node.data as ProcessNodeData).validationError === nextValidationError) {
+      return node;
+    }
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        validationError: nextValidationError,
+      },
+    } as AppNode;
+  });
+};
+
+const reconcileGraphState = (
+  state: Pick<SimulationState, 'items' | 'edges' | 'nodes' | 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue'>,
+  nextNodes: AppNode[],
+  nextEdges: Edge[],
+) => {
+  const normalizedEdges = normalizeGraphEdges(nextNodes, nextEdges);
+  const nextItems = reconcileItemsForGraph(state.items, nextNodes, normalizedEdges);
+  return {
+    nodes: applyValidationToNodes(nextNodes, normalizedEdges, getSharedCapacitySettings(state)),
+    edges: normalizedEdges,
+    items: nextItems,
+    ...computeDerivedState(nextItems),
+  };
+};
+
+const resetRuntimeNodeState = (
+  nodes: AppNode[],
+  edges: Edge[],
+  settings: {
+    capacityMode: CapacityMode;
+    sharedCapacityInputMode: SharedCapacityInputMode;
+    sharedCapacityValue: number;
+  }
+): AppNode[] =>
+  applyValidationToNodes(
+    nodes.map((node) => {
+      if (node.type !== 'processNode' && node.type !== 'startNode' && node.type !== 'endNode') {
+        return node;
+      }
+      const pData = node.data as ProcessNodeData;
+      const hasRuntimeState =
+        pData.stats.processed !== 0 ||
+        pData.stats.failed !== 0 ||
+        pData.stats.maxQueue !== 0 ||
+        pData.validationError !== undefined;
+      if (!hasRuntimeState) {
+        return node;
+      }
+      return {
+        ...node,
+        data: {
+          ...pData,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          validationError: undefined,
+        },
+      } as AppNode;
+    }),
+    edges,
+    settings
+  );
+
+const getSharedCapacitySettings = (
+  state: Pick<SimulationState, 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue'>
+) => ({
+  capacityMode: state.capacityMode,
+  sharedCapacityInputMode: state.sharedCapacityInputMode,
+  sharedCapacityValue: state.sharedCapacityValue,
+});
+
+const resolveBlockedItemTarget = (
+  item: ProcessItem,
+  nodeMap: Map<string, AppNode>,
+  edgesBySource: Map<string, Edge[]>
+): string | null => {
+  if (!item.currentNodeId || !item.handoffTargetNodeId) return null;
+  const sourceNode = nodeMap.get(item.currentNodeId);
+  if (!sourceNode || sourceNode.type === 'annotationNode') return null;
+
+  const outgoing = edgesBySource.get(item.currentNodeId) || [];
+  if (
+    nodeMap.has(item.handoffTargetNodeId) &&
+    outgoing.some((edge) => edge.target === item.handoffTargetNodeId)
+  ) {
+    return item.handoffTargetNodeId;
+  }
+  if (outgoing.length === 0) return null;
+  if (outgoing.length === 1) return outgoing[0].target;
+
+  const routingWeights = (sourceNode.data as ProcessNodeData).routingWeights || {};
+  let preferredTarget = outgoing[0].target;
+  let preferredWeight = Math.max(0, routingWeights[preferredTarget] ?? 1);
+
+  for (const edge of outgoing.slice(1)) {
+    const edgeWeight = Math.max(0, routingWeights[edge.target] ?? 1);
+    if (edgeWeight > preferredWeight) {
+      preferredTarget = edge.target;
+      preferredWeight = edgeWeight;
+    }
+  }
+
+  return preferredTarget;
+};
+
+const reconcileBlockedItemsForFlow = (
+  items: ProcessItem[],
+  nodes: AppNode[],
+  edges: Edge[]
+): ProcessItem[] => {
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const edgesBySource = buildEdgesBySource(edges);
+  let changed = false;
+
+  const nextItems = items.map((item) => {
+    if (item.status !== ItemStatus.QUEUED || !item.currentNodeId || !item.handoffTargetNodeId) {
+      return item;
+    }
+
+    const nextTarget = resolveBlockedItemTarget(item, nodeMap, edgesBySource);
+    if (!nextTarget || nextTarget === item.handoffTargetNodeId) {
+      return item;
+    }
+
+    changed = true;
+    return {
+      ...item,
+      handoffTargetNodeId: nextTarget,
+    };
+  });
+
+  return changed ? nextItems : items;
 };
 
 const buildRunSummaryKey = (summary: RunSummary) =>
@@ -708,6 +1171,88 @@ const clearVisualTransferCleanupTimers = () => {
   visualTransferCleanupTimers.clear();
 };
 
+const pushUndoSnapshot = (
+  state: EditorSnapshot,
+  setState: (partial: Partial<SimulationState>) => void,
+) => {
+  undoSnapshots.push(createEditorSnapshot(state));
+  if (undoSnapshots.length > MAX_UNDO_SNAPSHOTS) {
+    undoSnapshots.splice(0, undoSnapshots.length - MAX_UNDO_SNAPSHOTS);
+  }
+  setState({ canUndo: undoSnapshots.length > 0 });
+};
+
+const restoreEditorSnapshot = (
+  snapshot: EditorSnapshot,
+  currentState: SimulationState,
+): Partial<SimulationState> => {
+  const durationConfig = DURATION_PRESETS[snapshot.durationPreset] || DURATION_PRESETS.unlimited;
+  const speedConfig = SPEED_PRESETS.find((preset) => preset.key === snapshot.speedPreset) || SPEED_PRESETS[1];
+  const clonedNodes = cloneSerializable(snapshot.nodes) as AppNode[];
+  const clonedEdges = cloneSerializable(snapshot.edges) as Edge[];
+  const normalizedEdges = normalizeFlowEdgeHandles(clonedNodes, clonedEdges);
+  const restoredNodes = resetRuntimeNodeState(clonedNodes, normalizedEdges, {
+    capacityMode: snapshot.capacityMode,
+    sharedCapacityInputMode: snapshot.sharedCapacityInputMode,
+    sharedCapacityValue: snapshot.sharedCapacityValue,
+  });
+  resetSimulationRng(snapshot.simulationSeed);
+  clearVisualTransferCleanupTimers();
+
+  return {
+    nodes: restoredNodes,
+    edges: normalizedEdges,
+    itemConfig: cloneSerializable(snapshot.itemConfig),
+    defaultHeaderColor: snapshot.defaultHeaderColor,
+    durationPreset: snapshot.durationPreset,
+    targetDuration: durationConfig.totalTicks,
+    speedPreset: snapshot.speedPreset,
+    ticksPerSecond: speedConfig.ticksPerSecond,
+    autoStopEnabled: snapshot.autoStopEnabled,
+    metricsWindowCompletions: snapshot.metricsWindowCompletions,
+    demandMode: snapshot.demandMode,
+    demandUnit: snapshot.demandUnit,
+    capacityMode: snapshot.capacityMode,
+    sharedCapacityInputMode: snapshot.sharedCapacityInputMode,
+    sharedCapacityValue: snapshot.sharedCapacityValue,
+    demandTotalTicks: DEMAND_UNIT_TICKS[snapshot.demandUnit],
+    simulationSeed: snapshot.simulationSeed,
+    kpiTargets: cloneSerializable(snapshot.kpiTargets),
+    currentCanvasId: snapshot.currentCanvasId,
+    currentCanvasName: snapshot.currentCanvasName,
+    ...buildRunStateReset(),
+    lastAutoSavedAt: currentState.lastAutoSavedAt,
+    canUndo: undoSnapshots.length > 0,
+  };
+};
+
+const clearAutosaveTimer = () => {
+  if (!autosaveTimer) return;
+  window.clearTimeout(autosaveTimer);
+  autosaveTimer = null;
+};
+
+const scheduleAutosave = (getState: () => SimulationState) => {
+  if (typeof window === 'undefined') return;
+  clearAutosaveTimer();
+  autosaveTimer = window.setTimeout(() => {
+    autosaveTimer = null;
+    const state = getState();
+    if (state.readOnlyMode) return;
+    void state.saveCanvasToDb({ silent: true, autosave: true, skipRefresh: true });
+  }, AUTOSAVE_DELAY_MS);
+};
+
+const shouldRecordUndoForNodeChanges = (changes: NodeChange[]) =>
+  changes.some((change: any) => {
+    if (change?.type === 'select') return false;
+    if (change?.type === 'position' && change?.dragging === true) return false;
+    return true;
+  });
+
+const shouldRecordUndoForEdgeChanges = (changes: EdgeChange[]) =>
+  changes.some((change: any) => change?.type !== 'select');
+
 export const useStore = create<SimulationState>((set, get) => ({
   nodes: initialNodes,
   edges: initialEdges,
@@ -724,15 +1269,21 @@ export const useStore = create<SimulationState>((set, get) => ({
   metricsWindowCompletions: 50,
   demandMode: 'auto',
   demandUnit: 'week',
+  capacityMode: 'local',
+  sharedCapacityInputMode: DEFAULT_SHARED_CAPACITY_INPUT_MODE,
+  sharedCapacityValue: DEFAULT_SHARED_CAPACITY_VALUE,
   demandTotalTicks: DEMAND_UNIT_TICKS.week,
   demandArrivalsGenerated: 0,
   demandArrivalsByNode: {},
   demandAccumulatorByNode: {},
   demandOpenTicksByNode: {},
   periodCompleted: 0,
+  kpiHistoryByPeriod: createEmptyKpiHistory(),
+  nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
 
   // Performance: Pre-computed derived state
   itemsByNode: new Map(),
+  blockedCountsByTarget: new Map(),
   itemCounts: createEmptyItemCounts(),
   visualTransfers: [],
 
@@ -760,11 +1311,14 @@ export const useStore = create<SimulationState>((set, get) => ({
   simulationProgress: 0,
   autoStopEnabled: true,
   simulationSeed: DEFAULT_SIMULATION_SEED,
+  kpiTargets: { ...DEFAULT_KPI_TARGETS },
   showSunMoonClock: readShowSunMoonClockPreference(),
   readOnlyMode: false,
   runStartedAtMs: null,
   lastRunSummary: null,
   lastLoggedRunKey: null,
+  lastAutoSavedAt: null,
+  canUndo: false,
 
   // Canvas identity
   currentCanvasId: null,
@@ -773,19 +1327,27 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   setNodes: (nodes) => {
     if (get().readOnlyMode) return;
-    set({ nodes });
+    pushUndoSnapshot(get(), set);
+    set((state) => reconcileGraphState(state, nodes, state.edges));
+    scheduleAutosave(get);
   },
   setEdges: (edges) => {
     if (get().readOnlyMode) return;
-    set({ edges });
+    pushUndoSnapshot(get(), set);
+    set((state) => reconcileGraphState(state, state.nodes, edges));
+    scheduleAutosave(get);
   },
   setItemConfig: (config) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     set(state => ({ itemConfig: { ...state.itemConfig, ...config } }));
+    scheduleAutosave(get);
   },
   setDefaultHeaderColor: (color) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     set({ defaultHeaderColor: color });
+    scheduleAutosave(get);
   },
   // Time base is fixed to 1 tick = 1 simulated minute.
   // Keep this action for API compatibility with older UI code.
@@ -796,11 +1358,13 @@ export const useStore = create<SimulationState>((set, get) => ({
   },
   setDemandMode: (mode: DemandMode) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     set((state) => {
       if (mode === state.demandMode) return state;
       const demandTotalTicks = DEMAND_UNIT_TICKS[state.demandUnit];
       const durationPreset = mode === 'target' ? getDemandDurationPreset(state.demandUnit) : state.durationPreset;
       const targetDuration = mode === 'target' ? demandTotalTicks : state.targetDuration;
+      const nextSettings = getSharedCapacitySettings(state);
       resetSimulationRng(state.simulationSeed);
       return {
         demandMode: mode,
@@ -808,32 +1372,97 @@ export const useStore = create<SimulationState>((set, get) => ({
         durationPreset,
         targetDuration,
         autoStopEnabled: mode === 'target' ? true : state.autoStopEnabled,
-        ...buildRunStateReset()
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(state.nodes, state.edges, nextSettings),
       };
     });
+    scheduleAutosave(get);
   },
   setDemandUnit: (unit: DemandUnit) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     set((state) => {
       if (unit === state.demandUnit) return state;
       const demandTotalTicks = DEMAND_UNIT_TICKS[unit];
       const durationPreset = state.demandMode === 'target' ? getDemandDurationPreset(unit) : state.durationPreset;
       const targetDuration = state.demandMode === 'target' ? demandTotalTicks : state.targetDuration;
+      const nextSettings = getSharedCapacitySettings(state);
       resetSimulationRng(state.simulationSeed);
       return {
         demandUnit: unit,
         demandTotalTicks,
         durationPreset,
         targetDuration,
-        ...buildRunStateReset()
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(state.nodes, state.edges, nextSettings),
       };
     });
+    scheduleAutosave(get);
+  },
+  setCapacityMode: (mode: CapacityMode) => {
+    if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      if (mode === state.capacityMode) return state;
+      const nextSettings = {
+        capacityMode: mode,
+        sharedCapacityInputMode: state.sharedCapacityInputMode,
+        sharedCapacityValue: state.sharedCapacityValue,
+      };
+      resetSimulationRng(state.simulationSeed);
+      return {
+        capacityMode: mode,
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(state.nodes, state.edges, nextSettings),
+      };
+    });
+    scheduleAutosave(get);
+  },
+  setSharedCapacityInputMode: (mode: SharedCapacityInputMode) => {
+    if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      if (mode === state.sharedCapacityInputMode) return state;
+      const nextSettings = {
+        capacityMode: state.capacityMode,
+        sharedCapacityInputMode: mode,
+        sharedCapacityValue: state.sharedCapacityValue,
+      };
+      resetSimulationRng(state.simulationSeed);
+      return {
+        sharedCapacityInputMode: mode,
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(state.nodes, state.edges, nextSettings),
+      };
+    });
+    scheduleAutosave(get);
+  },
+  setSharedCapacityValue: (value: number) => {
+    if (get().readOnlyMode) return;
+    const nextValue = Number.isFinite(value) ? Math.max(0, value) : get().sharedCapacityValue;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      if (nextValue === state.sharedCapacityValue) return state;
+      const nextSettings = {
+        capacityMode: state.capacityMode,
+        sharedCapacityInputMode: state.sharedCapacityInputMode,
+        sharedCapacityValue: nextValue,
+      };
+      resetSimulationRng(state.simulationSeed);
+      return {
+        sharedCapacityValue: nextValue,
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(state.nodes, state.edges, nextSettings),
+      };
+    });
+    scheduleAutosave(get);
   },
 
   setDurationPreset: (preset: string) => {
     if (get().readOnlyMode) return;
     const presetConfig = DURATION_PRESETS[preset];
     if (!presetConfig) return;
+    pushUndoSnapshot(get(), set);
     set({
       durationPreset: preset,
       targetDuration: presetConfig.totalTicks,
@@ -842,6 +1471,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         ? 0
         : Math.min(100, (get().tickCount / presetConfig.totalTicks) * 100)
     });
+    scheduleAutosave(get);
   },
 
   setSpeedPreset: (preset: string) => {
@@ -855,21 +1485,49 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   setAutoStop: (enabled: boolean) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     set({ autoStopEnabled: enabled });
+    scheduleAutosave(get);
   },
 
   setSimulationSeed: (seed: number) => {
     if (get().readOnlyMode) return;
     const normalized = normalizeSeed(seed, get().simulationSeed);
+    pushUndoSnapshot(get(), set);
     resetSimulationRng(normalized);
     set({ simulationSeed: normalized });
+    scheduleAutosave(get);
+  },
+
+  setKpiTargets: (targets) => {
+    if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => ({
+      kpiTargets: {
+        leadTime:
+          Number.isFinite(Number(targets.leadTime)) && Number(targets.leadTime) >= 0
+            ? Math.round(Number(targets.leadTime))
+            : state.kpiTargets.leadTime,
+        processEfficiency:
+          targets.processEfficiency === undefined
+            ? state.kpiTargets.processEfficiency
+            : clampPercent(Number(targets.processEfficiency)),
+        resourceUtilization:
+          targets.resourceUtilization === undefined
+            ? state.kpiTargets.resourceUtilization
+            : clampPercent(Number(targets.resourceUtilization)),
+      },
+    }));
+    scheduleAutosave(get);
   },
 
   randomizeSimulationSeed: () => {
     if (get().readOnlyMode) return;
     const simulationSeed = createRandomSeed();
+    pushUndoSnapshot(get(), set);
     resetSimulationRng(simulationSeed);
     set({ simulationSeed });
+    scheduleAutosave(get);
   },
 
   setShowSunMoonClock: (enabled: boolean) => {
@@ -879,67 +1537,100 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   setReadOnlyMode: (enabled: boolean) => set({ readOnlyMode: Boolean(enabled) }),
 
+  undoEditorChange: () => {
+    if (get().readOnlyMode) return;
+    const snapshot = undoSnapshots.pop();
+    if (!snapshot) {
+      set({ canUndo: false });
+      return;
+    }
+    set((state) => restoreEditorSnapshot(snapshot, state));
+    set({ canUndo: undoSnapshots.length > 0 });
+    scheduleAutosave(get);
+  },
+
   onNodesChange: (changes: NodeChange[]) => {
     if (get().readOnlyMode) return;
-    set({
-      nodes: applyNodeChanges(changes, get().nodes) as AppNode[],
-    });
+    if (shouldRecordUndoForNodeChanges(changes)) {
+      pushUndoSnapshot(get(), set);
+    }
+    set((state) =>
+      reconcileGraphState(
+        state,
+        applyNodeChanges(changes, state.nodes) as AppNode[],
+        state.edges,
+      ),
+    );
+    if (shouldRecordUndoForNodeChanges(changes)) {
+      scheduleAutosave(get);
+    }
   },
 
   onEdgesChange: (changes: EdgeChange[]) => {
     if (get().readOnlyMode) return;
-    set({
-      edges: applyEdgeChanges(changes, get().edges),
-    });
+    if (shouldRecordUndoForEdgeChanges(changes)) {
+      pushUndoSnapshot(get(), set);
+    }
+    set((state) => reconcileGraphState(state, state.nodes, applyEdgeChanges(changes, state.edges)));
+    if (shouldRecordUndoForEdgeChanges(changes)) {
+      scheduleAutosave(get);
+    }
   },
 
   connect: (connection: Connection) => {
     if (get().readOnlyMode) return;
-    const normalizedConnection = normalizeFlowEdgeHandles(get().nodes, [connection])[0];
-    set({
-      edges: addEdge({
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const normalizedConnection = normalizeFlowEdgeHandles(state.nodes, [connection])[0];
+      const nextEdges = addEdge({
         ...normalizedConnection,
         type: 'processEdge',
         animated: false,
         markerEnd: { type: MarkerType.ArrowClosed }
-      }, get().edges),
+      }, state.edges);
+      return reconcileGraphState(state, state.nodes, nextEdges);
     });
+    scheduleAutosave(get);
   },
 
   deleteEdge: (id: string) => {
     if (get().readOnlyMode) return;
-    set({
-        edges: get().edges.filter(e => e.id !== id)
-    });
+    pushUndoSnapshot(get(), set);
+    set((state) => reconcileGraphState(state, state.nodes, state.edges.filter((edge) => edge.id !== id)));
+    scheduleAutosave(get);
   },
 
   updateEdgeData: (id: string, data: Record<string, any>) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     set((state) => ({
       edges: state.edges.map(e =>
         e.id === id ? { ...e, data: { ...(e as any).data, ...data } } : e
       )
     }));
+    scheduleAutosave(get);
   },
 
   reconnectEdge: (oldEdge: Edge, newConnection: Connection) => {
     if (get().readOnlyMode) return;
-    // Replace the old edge with a new connection
-    const { edges } = get();
-    const filteredEdges = edges.filter(e => e.id !== oldEdge.id);
-    const normalizedConnection = normalizeFlowEdgeHandles(get().nodes, [newConnection])[0];
-    set({
-      edges: addEdge({
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const filteredEdges = state.edges.filter((edge) => edge.id !== oldEdge.id);
+      const normalizedConnection = normalizeFlowEdgeHandles(state.nodes, [newConnection])[0];
+      const nextEdges = addEdge({
         ...normalizedConnection,
         type: 'processEdge',
         animated: false,
         markerEnd: { type: MarkerType.ArrowClosed }
-      }, filteredEdges),
+      }, filteredEdges);
+      return reconcileGraphState(state, state.nodes, nextEdges);
     });
+    scheduleAutosave(get);
   },
 
   deleteNode: (id: string) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     const { nodes, edges, items } = get();
     const nodeToDelete = nodes.find(n => n.id === id);
     
@@ -950,18 +1641,19 @@ export const useStore = create<SimulationState>((set, get) => ({
     // Remove connected edges
     const updatedEdges = edges.filter(e => e.source !== id && e.target !== id);
 
-    // Remove items in this node
-    const updatedItems = items.filter(i => i.currentNodeId !== id);
-
-    set({
-        nodes: updatedNodes,
-        edges: updatedEdges,
-        items: updatedItems
-    });
+    set((state) =>
+      reconcileGraphState(
+        { ...state, items: items.filter((item) => item.currentNodeId !== id) },
+        updatedNodes,
+        updatedEdges,
+      ),
+    );
+    scheduleAutosave(get);
   },
 
   addNode: () => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     const id = generateId();
     const newNode: ProcessNode = {
       id,
@@ -982,11 +1674,18 @@ export const useStore = create<SimulationState>((set, get) => ({
         workingHours: createDefaultWorkingHours()
       },
     };
-    set({ nodes: [...get().nodes, newNode] });
+    set((state) => {
+      const nextNodes = [...state.nodes, newNode];
+      return {
+        nodes: applyValidationToNodes(nextNodes, state.edges, getSharedCapacitySettings(state)),
+      };
+    });
+    scheduleAutosave(get);
   },
 
   addStartNode: () => {
       if (get().readOnlyMode) return;
+      pushUndoSnapshot(get(), set);
       const id = generateId();
       const newNode: StartNode = {
         id,
@@ -1008,11 +1707,18 @@ export const useStore = create<SimulationState>((set, get) => ({
           workingHours: createDefaultWorkingHours()
         },
       };
-      set({ nodes: [...get().nodes, newNode] });
+	      set((state) => {
+	        const nextNodes = [...state.nodes, newNode];
+	        return {
+	          nodes: applyValidationToNodes(nextNodes, state.edges, getSharedCapacitySettings(state)),
+	        };
+	      });
+	      scheduleAutosave(get);
   },
 
   addEndNode: () => {
       if (get().readOnlyMode) return;
+      pushUndoSnapshot(get(), set);
       const id = generateId();
       const newNode: EndNode = {
         id,
@@ -1033,11 +1739,18 @@ export const useStore = create<SimulationState>((set, get) => ({
           workingHours: createDefaultWorkingHours()
         },
       };
-      set({ nodes: [...get().nodes, newNode] });
+	      set((state) => {
+	        const nextNodes = [...state.nodes, newNode];
+	        return {
+	          nodes: applyValidationToNodes(nextNodes, state.edges, getSharedCapacitySettings(state)),
+	        };
+	      });
+	      scheduleAutosave(get);
   },
 
   addAnnotation: () => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     const id = generateId();
     const newNode: AnnotationNode = {
       id,
@@ -1048,10 +1761,12 @@ export const useStore = create<SimulationState>((set, get) => ({
       },
     };
     set({ nodes: [...get().nodes, newNode] });
+    scheduleAutosave(get);
   },
 
   updateNodeData: (id, data) => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     set((state) => {
       const prevNode = state.nodes.find((node) => node.id === id);
       const isProcessNode = prevNode && (prevNode.type === 'processNode' || prevNode.type === 'startNode' || prevNode.type === 'endNode');
@@ -1064,8 +1779,12 @@ export const useStore = create<SimulationState>((set, get) => ({
         shouldResetMetricsForNodeData(prevNode.data as ProcessNodeData, nextData as Partial<ProcessNodeData>)
       );
 
-      const nextNodes = state.nodes.map((node) =>
-        node.id === id ? { ...node, data: { ...node.data, ...nextData } } : node
+      const nextNodes = applyValidationToNodes(
+        state.nodes.map((node) =>
+          node.id === id ? { ...node, data: { ...node.data, ...nextData } } : node
+        ),
+        state.edges,
+        getSharedCapacitySettings(state)
       );
 
       if (!shouldReset) {
@@ -1074,13 +1793,20 @@ export const useStore = create<SimulationState>((set, get) => ({
 
       return { nodes: nextNodes, ...buildMetricsReset(state) };
     });
+    scheduleAutosave(get);
   },
 
   updateNode: (id, partialNode) => {
     if (get().readOnlyMode) return;
-    set({
-        nodes: get().nodes.map(n => n.id === id ? { ...n, ...partialNode } : n)
-    });
+    pushUndoSnapshot(get(), set);
+    set((state) => ({
+      nodes: applyValidationToNodes(
+        state.nodes.map((node) => (node.id === id ? { ...node, ...partialNode } : node)),
+        state.edges,
+        getSharedCapacitySettings(state)
+      ),
+    }));
+    scheduleAutosave(get);
   },
 
   startSimulation: () => {
@@ -1136,20 +1862,13 @@ export const useStore = create<SimulationState>((set, get) => ({
         resetSimulationRng(state.simulationSeed);
         return buildRunStateReset();
       })(),
-      nodes: state.nodes.map(n => {
-        if (n.type === 'processNode' || n.type === 'startNode' || n.type === 'endNode') {
-            return {
-                ...n,
-                data: { ...n.data, stats: { processed: 0, failed: 0, maxQueue: 0 }, validationError: undefined }
-            } as AppNode;
-        }
-        return n;
-      })
+      nodes: resetRuntimeNodeState(state.nodes, state.edges, getSharedCapacitySettings(state)),
     }));
   },
 
   clearCanvas: () => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     clearVisualTransferCleanupTimers();
     resetSimulationRng(get().simulationSeed);
     set({ 
@@ -1157,6 +1876,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         edges: [], 
         ...buildRunStateReset()
     });
+    scheduleAutosave(get);
   },
 
   setTickSpeed: (tickSpeed) => set({ tickSpeed }),
@@ -1171,7 +1891,13 @@ export const useStore = create<SimulationState>((set, get) => ({
     const currentTick = get().tickCount;
     const metricsEpoch = get().metricsEpoch;
     const newItem = createQueuedItem(targetNodeId, currentTick, metricsEpoch);
-    set({ items: [...get().items, newItem] });
+    set((state) => {
+      const nextItems = [...state.items, newItem];
+      return {
+        items: nextItems,
+        ...computeDerivedState(nextItems),
+      };
+    });
   },
 
   clearItems: () => {
@@ -1179,6 +1905,7 @@ export const useStore = create<SimulationState>((set, get) => ({
     set({
       items: [],
       itemsByNode: new Map(),
+      blockedCountsByTarget: new Map(),
       itemCounts: createEmptyItemCounts(),
       visualTransfers: [],
     });
@@ -1279,12 +2006,19 @@ export const useStore = create<SimulationState>((set, get) => ({
       try {
         const flow = JSON.parse(fileContent);
         if (flow.nodes && flow.edges) {
+            pushUndoSnapshot(get(), set);
             clearVisualTransferCleanupTimers();
             const durationPreset = flow.durationPreset || get().durationPreset;
             const durationConfig = DURATION_PRESETS[durationPreset] || DURATION_PRESETS.unlimited;
             const speedPreset = flow.speedPreset || get().speedPreset;
             const speedConfig = SPEED_PRESETS.find((s) => s.key === speedPreset) || SPEED_PRESETS[1];
             const demandUnit = (flow.demandUnit as DemandUnit) || 'week';
+            const capacityMode = (flow.capacityMode as CapacityMode) || 'local';
+            const sharedCapacityInputMode =
+              (flow.sharedCapacityInputMode as SharedCapacityInputMode) || DEFAULT_SHARED_CAPACITY_INPUT_MODE;
+            const sharedCapacityValue = Number.isFinite(flow.sharedCapacityValue)
+              ? Math.max(0, Number(flow.sharedCapacityValue))
+              : DEFAULT_SHARED_CAPACITY_VALUE;
             const simulationSeed = normalizeSeed(flow.simulationSeed, get().simulationSeed);
             resetSimulationRng(simulationSeed);
             set({
@@ -1304,12 +2038,20 @@ export const useStore = create<SimulationState>((set, get) => ({
                     : get().metricsWindowCompletions,
                 demandMode: (flow.demandMode as DemandMode) || 'auto',
                 demandUnit,
+                capacityMode,
+                sharedCapacityInputMode,
+                sharedCapacityValue,
                 demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
                 simulationSeed,
+                kpiTargets: {
+                  ...get().kpiTargets,
+                  ...(flow.kpiTargets || {}),
+                },
                 currentCanvasId: null,
                 currentCanvasName: normalizeCanvasName(flow.canvasName || 'Imported Process'),
                 ...buildRunStateReset()
             });
+            scheduleAutosave(get);
             showToast('success', 'Flow imported successfully');
         } else {
             showToast('error', 'Invalid JSON structure');
@@ -1323,6 +2065,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       if (get().readOnlyMode) return;
       const scenario = SCENARIOS[scenarioKey as keyof typeof SCENARIOS];
       if (scenario) {
+          pushUndoSnapshot(get(), set);
           clearVisualTransferCleanupTimers();
           resetSimulationRng(get().simulationSeed);
           const nodes = JSON.parse(JSON.stringify(scenario.nodes)) as AppNode[];
@@ -1340,6 +2083,7 @@ export const useStore = create<SimulationState>((set, get) => ({
               currentCanvasName: SCENARIO_NAMES[scenarioKey] || 'Untitled Canvas',
               ...buildRunStateReset()
           });
+          scheduleAutosave(get);
       }
   },
 
@@ -1396,8 +2140,9 @@ export const useStore = create<SimulationState>((set, get) => ({
     }
   },
 
-  saveCanvasToDb: async () => {
+  saveCanvasToDb: async (options = {}) => {
     if (get().readOnlyMode) return;
+    clearAutosaveTimer();
     const sdk = getProcessBoxSdk();
     const state = get();
     const workspaceId = ensureWorkspaceId(state.currentCanvasId);
@@ -1406,6 +2151,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       workspaceId,
       canvasName,
     });
+    const nextSavedAt = Date.now();
 
     if (!sdk?.isEmbedded) {
       try {
@@ -1413,25 +2159,32 @@ export const useStore = create<SimulationState>((set, get) => ({
         await saveCanvas({
           id: workspaceId,
           name: canvasName,
-          createdAt: existing?.createdAt || Date.now(),
-          updatedAt: Date.now(),
+          createdAt: existing?.createdAt || nextSavedAt,
+          updatedAt: nextSavedAt,
           data: flow,
         });
         set({
           currentCanvasId: workspaceId,
           currentCanvasName: canvasName,
+          lastAutoSavedAt: nextSavedAt,
         });
         setLastCanvasId(workspaceId);
-        await get().refreshCanvasList();
-        showToast('success', 'Flow saved locally');
+        if (!options.skipRefresh) {
+          await get().refreshCanvasList();
+        }
+        if (!options.silent) {
+          showToast('success', options.autosave ? 'Flow autosaved locally' : 'Flow saved locally');
+        }
       } catch {
-        showToast('error', 'Local save failed in this browser.');
+        if (!options.silent) {
+          showToast('error', 'Local save failed in this browser.');
+        }
       }
       return;
     }
 
     try {
-      const payload = await sdk.createCloudSave({
+      await sdk.createCloudSave({
         note: flow.canvasName,
         state: flow as unknown as Record<string, unknown>,
         tier: 'registered',
@@ -1440,13 +2193,20 @@ export const useStore = create<SimulationState>((set, get) => ({
       set({
         currentCanvasId: workspaceId,
         currentCanvasName: flow.canvasName,
+        lastAutoSavedAt: nextSavedAt,
       });
 
       setLastCanvasId(workspaceId);
-      await get().refreshCanvasList();
-      showToast('success', 'Flow saved to cloud');
+      if (!options.skipRefresh) {
+        await get().refreshCanvasList();
+      }
+      if (!options.silent) {
+        showToast('success', options.autosave ? 'Flow autosaved to cloud' : 'Flow saved to cloud');
+      }
     } catch {
-      showToast('error', 'Cloud save failed. Please check sign-in and try again.');
+      if (!options.silent) {
+        showToast('error', 'Cloud save failed. Please check sign-in and try again.');
+      }
     }
   },
 
@@ -1457,6 +2217,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       showToast('error', 'Invalid process id.');
       return;
     }
+    pushUndoSnapshot(get(), set);
 
     const sdk = getProcessBoxSdk();
     if (!sdk?.isEmbedded) {
@@ -1522,6 +2283,7 @@ export const useStore = create<SimulationState>((set, get) => ({
 
   newCanvas: () => {
     if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
     resetSimulationRng(get().simulationSeed);
     set({
       nodes: [],
@@ -1530,13 +2292,16 @@ export const useStore = create<SimulationState>((set, get) => ({
       currentCanvasId: null,
       currentCanvasName: 'Untitled Canvas',
     });
+    scheduleAutosave(get);
   },
 
   renameCurrentCanvas: async (name: string) => {
     if (get().readOnlyMode) return;
     const nextName = normalizeCanvasName(name);
     const currentCanvasId = get().currentCanvasId;
+    pushUndoSnapshot(get(), set);
     set({ currentCanvasName: nextName });
+    scheduleAutosave(get);
     if (!currentCanvasId) return;
 
     const sdk = getProcessBoxSdk();
@@ -1629,12 +2394,17 @@ export const useStore = create<SimulationState>((set, get) => ({
         metricsWindowCompletions,
         demandMode,
         demandUnit,
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
         demandTotalTicks,
         demandArrivalsGenerated,
         demandArrivalsByNode,
         demandAccumulatorByNode,
         demandOpenTicksByNode,
         periodCompleted,
+        kpiHistoryByPeriod,
+        nodeUtilizationHistoryByNode,
         visualTransfers,
         runStartedAtMs,
         simulationSeed,
@@ -1663,6 +2433,16 @@ export const useStore = create<SimulationState>((set, get) => ({
       for (const node of nodes) {
         nodeMap.set(node.id, node);
       }
+      const sharedCapacitySettings = {
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
+      };
+      const nodeCapacityProfiles = new Map<string, ReturnType<typeof getNodeCapacityProfile>>();
+      for (const node of nodes) {
+        if (node.type === 'annotationNode') continue;
+        nodeCapacityProfiles.set(node.id, getNodeCapacityProfile(node, nodes, sharedCapacitySettings));
+      }
 
       // Compute working-hours availability for each node at this tick
       const workingStatus = new Map<string, boolean>();
@@ -1673,15 +2453,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       }
 
       // Build edge lookup by source for O(1) access
-      const edgesBySource = new Map<string, Edge[]>();
-      for (const edge of edges) {
-        const existing = edgesBySource.get(edge.source);
-        if (existing) {
-          existing.push(edge);
-        } else {
-          edgesBySource.set(edge.source, [edge]);
-        }
-      }
+      const edgesBySource = buildEdgesBySource(edges);
 
       // --- AUTO INJECTION / DEMAND INJECTION ---
       const injectedItems: ProcessItem[] = [];
@@ -1754,6 +2526,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       // Combine items (reuse array if no injections)
       const allItems = injectedItems.length > 0 ? [...items, ...injectedItems] : items;
       const activeWipCounts = new Map<string, number>();
+      const processingItemsByNode = new Map<string, ProcessItem[]>();
       for (const item of allItems) {
         if (
           item.currentNodeId &&
@@ -1762,6 +2535,31 @@ export const useStore = create<SimulationState>((set, get) => ({
         ) {
           activeWipCounts.set(item.currentNodeId, (activeWipCounts.get(item.currentNodeId) || 0) + 1);
         }
+        if (item.status === ItemStatus.PROCESSING && item.currentNodeId) {
+          const existing = processingItemsByNode.get(item.currentNodeId);
+          if (existing) {
+            existing.push(item);
+          } else {
+            processingItemsByNode.set(item.currentNodeId, [item]);
+          }
+        }
+      }
+      const processingWorkShareByNode = new Map<string, number>();
+      for (const node of nodes) {
+        if (node.type !== 'processNode' && node.type !== 'startNode') continue;
+        const activeProcessing = processingItemsByNode.get(node.id) || [];
+        if (activeProcessing.length === 0) {
+          processingWorkShareByNode.set(node.id, 0);
+          continue;
+        }
+        const capacityProfile = nodeCapacityProfiles.get(node.id);
+        const availableCapacityPerTick =
+          capacityProfile?.availableCapacityPerTick ??
+          getLocalCapacityUnits((node.data as ProcessNodeData).resources || 0);
+        processingWorkShareByNode.set(
+          node.id,
+          Math.min(1, availableCapacityPerTick / activeProcessing.length),
+        );
       }
 
       // --- SINGLE PASS: Process all items and collect stats ---
@@ -1769,11 +2567,21 @@ export const useStore = create<SimulationState>((set, get) => ({
       const processingCounts = new Map<string, number>();
       let newlyCompleted = 0;
       let newlyCompletedInEpoch = 0;
+      let nextKpiHistory = kpiHistoryByPeriod;
 
       const registerCompletion = (item: ProcessItem) => {
         if (item.terminalNodeId === null) return;
         newlyCompleted++;
         if (item.metricsEpoch === metricsEpoch) newlyCompletedInEpoch++;
+        const leadTime = Math.max(0, item.timeActive + item.timeWaiting);
+        const valueAddedTime = Math.max(0, item.timeActive);
+        for (const period of KPI_PERIODS) {
+          nextKpiHistory = upsertKpiBucket(nextKpiHistory, period, tickCount, {
+            completions: 1,
+            leadTimeTotal: leadTime,
+            valueAddedTotal: valueAddedTime,
+          });
+        }
       };
 
       const enqueueVisualTransfer = (sourceNodeId: string, targetNodeId: string) => {
@@ -1795,7 +2603,10 @@ export const useStore = create<SimulationState>((set, get) => ({
         const targetData = targetNode.data as ProcessNodeData;
         if (getNodeFlowMode(targetData) !== 'pull') return true;
 
-        const localCapacity = Math.max(1, targetData.resources);
+        const localCapacity = Math.max(
+          0,
+          nodeCapacityProfiles.get(targetNodeId)?.maxConcurrentItems ?? getLocalCapacityUnits(targetData.resources),
+        );
         const localWip = activeWipCounts.get(targetNodeId) || 0;
         return localWip < localCapacity;
       };
@@ -1858,17 +2669,20 @@ export const useStore = create<SimulationState>((set, get) => ({
             const isWorking = workingStatus.get(node.id) ?? true;
             if (!isWorking) continue;
             const pData = node.data as ProcessNodeData;
-            item.remainingTime--;
-            item.timeActive++;
+            const workShare = processingWorkShareByNode.get(node.id) || 0;
+            const waitShare = Math.max(0, 1 - workShare);
+            item.remainingTime = Math.max(0, item.remainingTime - workShare);
+            item.timeActive += workShare;
+            item.timeWaiting += waitShare;
             item.nodeLeadTime++;
             item.totalTime++;
 
             const totalDuration = item.processingDuration || pData.processingTime;
             item.progress = totalDuration > 0
-              ? Math.min(100, ((totalDuration - item.remainingTime) / totalDuration) * 100)
+              ? Math.min(100, (Math.max(0, totalDuration - item.remainingTime) / totalDuration) * 100)
               : 100;
 
-            if (item.remainingTime <= 0) {
+            if (item.remainingTime <= 0.000001) {
               const passed = nextSimulationRandom() <= pData.quality;
 
               // Track stats update
@@ -1925,6 +2739,8 @@ export const useStore = create<SimulationState>((set, get) => ({
       for (const item of blockedItems) {
         const sourceNodeId = item.currentNodeId!;
         const targetNodeId = item.handoffTargetNodeId!;
+        const outgoing = edgesBySource.get(sourceNodeId) || [];
+        if (!nodeMap.has(targetNodeId) || !outgoing.some((edge) => edge.target === targetNodeId)) continue;
         if (!canAcceptTransfer(targetNodeId)) continue;
 
         activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
@@ -1960,18 +2776,29 @@ export const useStore = create<SimulationState>((set, get) => ({
         if (!queueItems || queueItems.length === 0) continue;
 
         const pData = node.data as ProcessNodeData;
+        const capacityProfile = nodeCapacityProfiles.get(node.id);
+        const capacityLimit = Math.max(
+          0,
+          capacityProfile?.maxConcurrentItems ?? getLocalCapacityUnits(pData.resources),
+        );
+        if (capacityLimit <= 0) continue;
         const isWorking = workingStatus.get(node.id) ?? true;
         if (!isWorking) continue;
 
+        const configuredBatchSize = node.type === 'processNode' ? getNodeBatchSize(pData) : 0;
         const batchSize =
           node.type === 'processNode'
-            ? (getNodeFlowMode(pData) === 'pull'
+              ? ((capacityProfile?.usesSharedAllocation ?? false)
               ? 1
-              : Math.min(getNodeBatchSize(pData), Math.max(1, pData.resources)))
+              : getNodeFlowMode(pData) === 'pull'
+              ? 1
+              : configuredBatchSize > 1
+                ? Math.min(configuredBatchSize, Math.max(1, getLocalCapacityUnits(pData.resources)))
+                : 1)
             : 1;
 
         let currentLoad = processingCounts.get(node.id) || 0;
-        while (queueItems.length >= batchSize && currentLoad + batchSize <= pData.resources) {
+        while (queueItems.length >= batchSize && currentLoad + batchSize <= capacityLimit) {
           const batch = queueItems.splice(0, batchSize);
           currentLoad += batchSize;
           processingCounts.set(node.id, currentLoad);
@@ -2035,6 +2862,48 @@ export const useStore = create<SimulationState>((set, get) => ({
         }
       }
 
+      let busyResourceTicksThisTick = 0;
+      let availableResourceTicksThisTick = 0;
+      const minNodeUtilizationTick = tickCount - NODE_UTILIZATION_ROLLING_WINDOW_TICKS + 1;
+      const nextNodeUtilizationHistory: NodeUtilizationHistoryByNode = {};
+      for (const node of nodes) {
+        if (node.type !== 'processNode' && node.type !== 'startNode') continue;
+        const existingSamples = (nodeUtilizationHistoryByNode[node.id] || []).filter(
+          (sample) => sample.tick >= minNodeUtilizationTick,
+        );
+        const isWorking = workingStatus.get(node.id) ?? true;
+        if (!isWorking) {
+          if (existingSamples.length > 0) {
+            nextNodeUtilizationHistory[node.id] = existingSamples;
+          }
+          continue;
+        }
+        const capacityProfile = nodeCapacityProfiles.get(node.id);
+        const availableResourceTicks = Math.max(
+          0,
+          capacityProfile?.availableCapacityPerTick ??
+            getLocalCapacityUnits((node.data as ProcessNodeData).resources || 0),
+        );
+        const busyResourceTicks = Math.min(availableResourceTicks, processingCounts.get(node.id) || 0);
+        availableResourceTicksThisTick += availableResourceTicks;
+        busyResourceTicksThisTick += busyResourceTicks;
+        nextNodeUtilizationHistory[node.id] = [
+          ...existingSamples,
+          {
+            tick: tickCount,
+            busyResourceTicks,
+            availableResourceTicks,
+          },
+        ];
+      }
+
+      for (const period of KPI_PERIODS) {
+        nextKpiHistory = upsertKpiBucket(nextKpiHistory, period, tickCount, {
+          busyResourceTicks: busyResourceTicksThisTick,
+          availableResourceTicks: availableResourceTicksThisTick,
+        });
+      }
+
       // Queue waiting is counted only for items that remain queued after assignment.
       // This avoids adding an artificial +1 wait tick when capacity is immediately available.
       for (const item of allItems) {
@@ -2063,21 +2932,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         const statsUpdate = nodesUpdates.get(n.id);
         if (n.type === 'processNode' || n.type === 'startNode' || n.type === 'endNode') {
           const pData = n.data as ProcessNodeData;
-          let validationError: string | undefined;
-
-          // Validation for nodes that need outgoing paths (not end nodes)
-          if (n.type !== 'endNode') {
-            const outgoing = edgesBySource.get(n.id);
-            if (!outgoing || outgoing.length === 0) {
-              validationError = 'No Output Path';
-            }
-            if (pData.resources === 0) {
-              validationError = 'Zero Capacity';
-            }
-            if (n.type === 'processNode' && getNodeBatchSize(pData) > Math.max(1, pData.resources)) {
-              validationError = 'Batch > Capacity';
-            }
-          }
+          const validationError = computeValidationErrorForNode(n, edgesBySource, nodeCapacityProfiles);
 
           if (statsUpdate || validationError !== pData.validationError) {
             return {
@@ -2195,6 +3050,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         displayTickCount,
         history: nextHistory,
         itemsByNode: derived.itemsByNode,
+        blockedCountsByTarget: derived.blockedCountsByTarget,
         itemCounts: derived.itemCounts,
         visualTransfers: nextVisualTransfers,
         simulationProgress,
@@ -2205,6 +3061,8 @@ export const useStore = create<SimulationState>((set, get) => ({
         demandArrivalsByNode: nextDemandArrivalsByNode,
         demandAccumulatorByNode: nextDemandAccumulatorByNode,
         demandOpenTicksByNode: nextDemandOpenTicksByNode,
+        kpiHistoryByPeriod: nextKpiHistory,
+        nodeUtilizationHistoryByNode: nextNodeUtilizationHistory,
         runStartedAtMs: effectiveRunStartedAtMs,
         lastRunSummary: nextLastRunSummary,
         lastLoggedRunKey: nextLastLoggedRunKey

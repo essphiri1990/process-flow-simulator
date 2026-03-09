@@ -1,21 +1,51 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { X, HelpCircle, Split, Zap, Trash2, RotateCcw } from 'lucide-react';
 import {
   getTimeUnitAbbrev,
-  getTimeUnitPlural,
   ProcessNodeData,
   NODE_HEADER_COLORS,
   DEMAND_UNIT_LABELS,
   DEFAULT_WORKING_HOURS,
   WorkingHoursConfig,
 } from '../types';
+import { clampAllocationPercent, getLocalCapacityUnits, getNodeCapacityProfile, getSharedAllocationTotals } from '../capacityModel';
 import ConfirmDialog from './ConfirmDialog';
 
 interface ConfigPanelProps {
   nodeId: string | null;
   onClose: () => void;
 }
+
+type ProcessingTimeUnit = 'minutes' | 'hours' | 'days';
+
+const getProcessingTimeUnit = (ticks: number): ProcessingTimeUnit => {
+  if (ticks >= 480 && ticks % 480 === 0) return 'days';
+  if (ticks >= 60 && ticks % 60 === 0) return 'hours';
+  return 'minutes';
+};
+
+const convertTicksToProcessingUnit = (ticks: number, unit: ProcessingTimeUnit): number => {
+  switch (unit) {
+    case 'days':
+      return ticks / 480;
+    case 'hours':
+      return ticks / 60;
+    case 'minutes':
+      return ticks;
+  }
+};
+
+const convertProcessingUnitToTicks = (value: number, unit: ProcessingTimeUnit): number => {
+  switch (unit) {
+    case 'days':
+      return Math.round(value * 480);
+    case 'hours':
+      return Math.round(value * 60);
+    case 'minutes':
+      return Math.round(value);
+  }
+};
 
 const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   const node = useStore((state) => state.nodes.find((n) => n.id === nodeId));
@@ -27,10 +57,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   const timeUnit = useStore((state) => state.timeUnit);
   const demandMode = useStore((state) => state.demandMode);
   const demandUnit = useStore((state) => state.demandUnit);
+  const capacityMode = useStore((state) => state.capacityMode);
+  const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
+  const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
-  const unitPlural = getTimeUnitPlural(timeUnit);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [processingTimeUnit, setProcessingTimeUnit] = useState<ProcessingTimeUnit>('minutes');
 
   if (!node) return null;
 
@@ -57,6 +90,40 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   const workingHours = data.workingHours
     ? { ...DEFAULT_WORKING_HOURS, ...data.workingHours }
     : { ...DEFAULT_WORKING_HOURS };
+  const processingTimeDisplay = convertTicksToProcessingUnit(data.processingTime, processingTimeUnit);
+  const capacityProfile = useMemo(
+    () =>
+      getNodeCapacityProfile(node as any, nodes as any, {
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
+      }),
+    [capacityMode, node, nodes, sharedCapacityInputMode, sharedCapacityValue],
+  );
+  const allocationTotals = useMemo(
+    () =>
+      getSharedAllocationTotals(nodes as any, {
+        capacityMode,
+        sharedCapacityInputMode,
+        sharedCapacityValue,
+      }),
+    [capacityMode, nodes, sharedCapacityInputMode, sharedCapacityValue],
+  );
+  const isSharedAllocationNode = capacityProfile.usesSharedAllocation && (isStartNode || isStandardNode);
+  const derivedCapacityLimit = Math.max(
+    0,
+    capacityProfile.usesSharedAllocation ? capacityProfile.maxConcurrentItems : getLocalCapacityUnits(data.resources || 0),
+  );
+  const allocationUsesEqualSplit = allocationTotals.totalAllocatedPercent <= 0 && allocationTotals.workNodeCount > 0;
+  const effectiveAllocatedPercent = allocationUsesEqualSplit ? 100 : allocationTotals.totalAllocatedPercent;
+  const effectiveRemainingPercent = allocationUsesEqualSplit ? 0 : allocationTotals.remainingPercent;
+  const effectiveAllocatedHoursPerDay = allocationUsesEqualSplit
+    ? allocationTotals.totalSharedHoursPerDay
+    : allocationTotals.allocatedHoursPerDay;
+  const effectiveRemainingHoursPerDay = allocationUsesEqualSplit ? 0 : allocationTotals.remainingHoursPerDay;
+  const displayedAllocationPercent = allocationUsesEqualSplit
+    ? capacityProfile.allocationPercent
+    : clampAllocationPercent(data.allocationPercent || 0);
 
   // Calculate current routing weights for display
   const currentWeights = data.routingWeights || {};
@@ -64,8 +131,15 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
 
   // Source config (init if undefined)
   const sourceConfig = data.sourceConfig || { enabled: false, interval: 20, batchSize: 1 };
-  const batchSize = Math.max(1, Math.min(data.batchSize || 1, Math.max(1, data.resources || 1)));
   const flowMode = data.flowMode === 'pull' ? 'pull' : 'push';
+  const maxBatchSize = Math.max(1, data.resources || 1);
+  const batchSizeRaw = Number(data.batchSize);
+  const batchingEnabled = Number.isFinite(batchSizeRaw) && batchSizeRaw > 1;
+  const batchSize = Math.min(
+    Math.max(batchingEnabled ? Math.round(batchSizeRaw) : (maxBatchSize > 1 ? 2 : 1), maxBatchSize > 1 ? 2 : 1),
+    maxBatchSize,
+  );
+  const canEnableBatching = !isSharedAllocationNode && flowMode !== 'pull' && maxBatchSize > 1;
 
   const handleWeightChange = (targetId: string, value: number) => {
     const newWeights = { ...currentWeights, [targetId]: value };
@@ -82,26 +156,30 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
     updateNodeData(node.id, { workingHours: next });
   };
 
+  useEffect(() => {
+    setProcessingTimeUnit(getProcessingTimeUnit(data.processingTime));
+  }, [data.processingTime, node.id]);
+
   return (
-    <div className="absolute right-3 top-3 bottom-[80px] w-80 bg-white rounded-xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] z-40 flex flex-col transform transition-transform duration-300 ease-in-out overflow-hidden">
+    <div className="absolute right-3 top-3 bottom-[80px] w-80 bg-white rounded-xl border border-slate-200 shadow-xl z-40 flex flex-col transform transition-transform duration-300 ease-in-out overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+      <div className="px-5 py-3 border-b border-slate-100 flex justify-between items-center">
         <div>
-          <h2 className="text-lg font-bold text-slate-800">Configuration</h2>
-          <p className="text-xs text-slate-500">Edit Node Parameters</p>
+          <h2 className="text-sm font-bold text-slate-800">Configuration</h2>
+          <p className="text-[11px] text-slate-400">Edit node parameters</p>
         </div>
-        <div className="flex gap-1">
-            <button onClick={handleDelete} className="p-1 hover:bg-red-100 rounded text-slate-400 hover:text-red-500" title="Delete Node">
-                <Trash2 size={20} />
+        <div className="flex gap-0.5">
+            <button onClick={handleDelete} className="p-1.5 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-500 transition" title="Delete Node">
+                <Trash2 size={16} />
             </button>
-            <button onClick={onClose} className="p-1 hover:bg-slate-200 rounded text-slate-500">
-                <X size={20} />
+            <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition">
+                <X size={16} />
             </button>
         </div>
       </div>
 
       {/* Form */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
         
         {/* Label */}
         <div className="space-y-2">
@@ -141,10 +219,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
 
         {/* Source Configuration (Start Nodes Only) */}
         {(isStartNode || (isStandardNode && !edges.some(e => e.target === node.id))) && (
-            <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100 space-y-3">
-                 <div className="flex items-center gap-2 text-emerald-800">
-                    <Zap size={16} />
-                    <span className="text-sm font-bold">Input Configuration</span>
+            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 space-y-3">
+                 <div className="flex items-center gap-2 text-slate-700">
+                    <Zap size={14} className="text-emerald-500" />
+                    <span className="text-xs font-bold uppercase tracking-wider">Input Configuration</span>
                  </div>
                  
                 <div className="flex items-center gap-2">
@@ -214,10 +292,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
         )}
 
         {(isStartNode || isStandardNode || isEndNode) && (
-          <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-3">
+          <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 space-y-3">
             <div className="flex items-center gap-2 text-slate-700">
-              <HelpCircle size={16} />
-              <span className="text-sm font-bold">Working Hours</span>
+              <HelpCircle size={14} className="text-slate-400" />
+              <span className="text-xs font-bold uppercase tracking-wider">Working Hours</span>
             </div>
 
             <div className="flex items-center gap-2">
@@ -275,18 +353,40 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
         {/* Processing Time */}
         <div className="space-y-2">
           <div className="flex justify-between items-center">
-             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Processing Time</label>
-             <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600">{data.processingTime} {unitAbbrev}</span>
+             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+               {isSharedAllocationNode ? 'Effort per Item' : 'Processing Time'}
+             </label>
+             <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600">{data.processingTime} min</span>
           </div>
-          <input
-            type="range"
-            min={isEndNode ? "0" : "1"}
-            max="50"
-            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-            value={data.processingTime}
-            onChange={(e) => handleChange('processingTime', parseInt(e.target.value))}
-          />
-          <p className="text-xs text-slate-400">Time required to process one item (in {unitPlural}).</p>
+          <div className="grid grid-cols-[1fr_110px] gap-2">
+            <input
+              type="number"
+              min={isEndNode ? '0' : '1'}
+              step={processingTimeUnit === 'minutes' ? '1' : '0.25'}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-800"
+              value={processingTimeDisplay}
+              onChange={(e) => {
+                const raw = Number(e.target.value);
+                if (!Number.isFinite(raw)) return;
+                const min = isEndNode ? 0 : processingTimeUnit === 'minutes' ? 1 : 0.25;
+                handleChange('processingTime', Math.max(isEndNode ? 0 : 1, convertProcessingUnitToTicks(Math.max(min, raw), processingTimeUnit)));
+              }}
+            />
+            <select
+              value={processingTimeUnit}
+              onChange={(e) => setProcessingTimeUnit(e.target.value as ProcessingTimeUnit)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 bg-white"
+            >
+              <option value="minutes">Minutes</option>
+              <option value="hours">Hours</option>
+              <option value="days">Days</option>
+            </select>
+          </div>
+          <p className="text-xs text-slate-400">
+            {isSharedAllocationNode
+              ? 'In shared allocation mode this is effort demand per item. Lower allocation means the same effort takes longer in elapsed time.'
+              : 'Supports long-running steps. Enter any duration in minutes, hours, or workdays.'}
+          </p>
         </div>
 
         {/* Variability (Hide for EndNode) */}
@@ -314,59 +414,192 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
         )}
 
         {/* Resources (Hide for EndNode if it's infinite, or allow editing if user wants to simulate a bottleneck at the end) */}
-        {!isEndNode && (
-            <div className="space-y-2">
+        {!isEndNode && !isSharedAllocationNode && (
+          <div className="space-y-2">
             <div className="flex justify-between items-center">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Capacity (Resources)</label>
-                <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600">{data.resources}</span>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Capacity (Resources)</label>
+              <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600">{data.resources}</span>
             </div>
             <input
-                type="range"
-                min="1"
-                max="10"
-                className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
-                value={data.resources}
-                onChange={(e) => handleChange('resources', parseInt(e.target.value))}
+              type="number"
+              min="1"
+              step="1"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-slate-800"
+              value={data.resources}
+              onChange={(e) => handleChange('resources', Math.max(1, parseInt(e.target.value || '1', 10)))}
             />
-            <p className="text-xs text-slate-400">Number of items that can be processed simultaneously.</p>
+            <p className="text-xs text-slate-400">Number of items that can be processed simultaneously. No hard cap.</p>
+          </div>
+        )}
+
+        {isSharedAllocationNode && (
+          <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 space-y-3">
+            <div className="flex items-center gap-2 text-slate-700">
+              <Zap size={14} className="text-blue-500" />
+              <span className="text-xs font-bold uppercase tracking-wider">Shared Allocation</span>
             </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Allocation</label>
+                <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600">
+                  {allocationUsesEqualSplit ? `Auto ${displayedAllocationPercent.toFixed(0)}%` : `${displayedAllocationPercent.toFixed(0)}%`}
+                </span>
+              </div>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-800"
+                value={data.allocationPercent || 0}
+                onChange={(e) => handleChange('allocationPercent', clampAllocationPercent(Number(e.target.value)))}
+              />
+              <p className="text-xs text-slate-500">
+                {allocationUsesEqualSplit
+                  ? `This node is currently using the equal-split fallback, so 0% configured behaves like ${displayedAllocationPercent.toFixed(0)}% effective allocation until you assign percentages.`
+                  : 'This node draws a percentage of the shared team budget defined in Settings.'}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Total Budget</div>
+                <div className="mt-1 font-semibold text-slate-700">
+                  {allocationTotals.totalSharedHoursPerDay.toFixed(1)}h/day
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Allocated %</div>
+                <div className="mt-1 font-semibold text-slate-700">{effectiveAllocatedPercent.toFixed(0)}%</div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Allocated h/day</div>
+                <div className="mt-1 font-semibold text-slate-700">
+                  {effectiveAllocatedHoursPerDay.toFixed(1)}
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Remaining %</div>
+                <div className={`mt-1 font-semibold ${effectiveRemainingPercent < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+                  {effectiveRemainingPercent.toFixed(0)}%
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2 col-span-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Remaining h/day</div>
+                <div className={`mt-1 font-semibold ${effectiveRemainingHoursPerDay < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+                  {effectiveRemainingHoursPerDay.toFixed(1)}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Hours/Day</div>
+                <div className="mt-1 font-semibold text-slate-700">{capacityProfile.allocatedHoursPerDay.toFixed(1)}</div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">FTE Eq.</div>
+                <div className="mt-1 font-semibold text-slate-700">{capacityProfile.equivalentResources.toFixed(2)}</div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Active Cap</div>
+                <div className="mt-1 font-semibold text-slate-700">{derivedCapacityLimit}</div>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              Changing total shared capacity rescales the hour budget. The percentage budget only changes when you edit node allocations.
+            </p>
+
+            <p className={`text-xs ${allocationTotals.isOverAllocated ? 'text-red-600' : 'text-slate-500'}`}>
+              {allocationTotals.isOverAllocated
+                ? 'This shared team is over-allocated. The simulator will allow it, but the model is now optimistic relative to available capacity.'
+                : 'Remaining budget is informational only. You can still allocate beyond 100% if you want to model over-commitment.'}
+            </p>
+          </div>
         )}
 
         {isStandardNode && (
-          <div className="bg-violet-50 rounded-xl p-4 border border-violet-100 space-y-3">
-            <div className="flex items-center gap-2 text-violet-800">
-              <Zap size={16} />
-              <span className="text-sm font-bold">Batch Processing</span>
+          <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 space-y-3">
+            <div className="flex items-center gap-2 text-slate-700">
+              <Zap size={14} className="text-violet-500" />
+              <span className="text-xs font-bold uppercase tracking-wider">Batch Processing</span>
             </div>
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-600">Batch Size</span>
-                <span className="font-bold text-violet-700">{batchSize}</span>
-              </div>
-              <input
-                type="range"
-                min="1"
-                max={Math.max(1, data.resources)}
-                step="1"
-                disabled={flowMode === 'pull'}
-                className="w-full h-1.5 bg-violet-200 rounded-lg appearance-none cursor-pointer accent-violet-600 disabled:cursor-not-allowed disabled:opacity-50"
-                value={batchSize}
-                onChange={(e) => handleChange('batchSize', parseInt(e.target.value, 10))}
-              />
+            {isSharedAllocationNode ? (
               <p className="text-xs text-slate-500">
-                {flowMode === 'pull'
-                  ? 'Pull mode disables local queueing, so batching is paused until you switch back to push.'
-                  : 'The node waits for this many queued items before starting them together. `1` keeps the current one-by-one behavior.'}
+                Shared allocation mode disables batching in this version. Switch the simulator back to Local Resources if this step needs true batch starts.
               </p>
-            </div>
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleChange('batchSize', 0)}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      !batchingEnabled
+                        ? 'bg-slate-800 border-slate-800 text-white'
+                        : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    Off
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!batchingEnabled && !canEnableBatching}
+                    onClick={() => {
+                      if (!batchingEnabled && !canEnableBatching) return;
+                      handleChange('batchSize', Math.max(2, Math.min(batchSize, maxBatchSize)));
+                    }}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      batchingEnabled
+                        ? 'bg-violet-600 border-violet-600 text-white'
+                        : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-50'
+                    }`}
+                  >
+                    On
+                  </button>
+                </div>
+
+                {batchingEnabled ? (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-600">Batch Size</span>
+                      <span className="font-bold text-violet-700">{batchSize}</span>
+                    </div>
+                    <input
+                      type="number"
+                      min="2"
+                      max={maxBatchSize}
+                      step="1"
+                      disabled={flowMode === 'pull' || maxBatchSize < 2}
+                      className="w-full px-3 py-2 border border-violet-200 rounded-lg focus:ring-2 focus:ring-violet-500 outline-none text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                      value={batchSize}
+                      onChange={(e) => handleChange('batchSize', Math.max(2, parseInt(e.target.value || '2', 10)))}
+                    />
+                    <p className="text-xs text-slate-500">
+                      {flowMode === 'pull'
+                        ? 'Pull mode pauses local batching. Switch back to push to batch work at this node.'
+                        : 'The node waits for this many queued items before starting them together.'}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    {maxBatchSize < 2
+                      ? 'Increase resources to at least 2 before turning batching on.'
+                      : 'Batching is off. Available resources will start work individually as items arrive.'}
+                  </p>
+                )}
+              </>
+            )}
           </div>
         )}
 
         {!isEndNode && (
-          <div className="bg-blue-50 rounded-xl p-4 border border-blue-100 space-y-3">
-            <div className="flex items-center gap-2 text-blue-800">
-              <Split size={16} />
-              <span className="text-sm font-bold">Flow Control</span>
+          <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 space-y-3">
+            <div className="flex items-center gap-2 text-slate-700">
+              <Split size={14} className="text-blue-500" />
+              <span className="text-xs font-bold uppercase tracking-wider">Flow Control</span>
             </div>
 
             <div className="flex gap-2">
@@ -396,8 +629,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
 
             {flowMode === 'pull' && (
               <div className="rounded-lg border border-blue-200 bg-white/70 px-3 py-2 text-xs text-slate-600">
-                This node can hold up to <span className="font-bold text-blue-700">{data.resources}</span> active items, matching its resource count.
-                Extra work stays upstream until a slot opens, so no local queue forms here.
+                This node can hold up to <span className="font-bold text-blue-700">{derivedCapacityLimit}</span> active items, matching its {isSharedAllocationNode ? 'derived shared-allocation cap' : 'resource count'}.
+                Extra work stays upstream until a slot opens, so no new local queue forms here. If you switch from push to pull mid-run, any work already queued here will drain first.
               </div>
             )}
           </div>
@@ -425,10 +658,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
 
         {/* Routing Logic (Only if multiple outputs) */}
         {!isEndNode && outgoingEdges.length > 1 && (
-          <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-3">
+          <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 space-y-3">
              <div className="flex items-center gap-2 text-slate-700">
-                <Split size={16} />
-                <span className="text-sm font-bold">Routing Logic</span>
+                <Split size={14} className="text-slate-400" />
+                <span className="text-xs font-bold uppercase tracking-wider">Routing Logic</span>
              </div>
              <p className="text-xs text-slate-500">Distribution of items passing to next stages.</p>
              
@@ -465,11 +698,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
       </div>
       
       {/* Footer Instructions */}
-      <div className="p-4 bg-blue-50 border-t border-blue-100 text-blue-800 text-xs flex gap-2">
-          <HelpCircle size={16} className="shrink-0" />
-          <p>
-            Adjusting these values during a simulation affects items entering the node <strong>next</strong>. Current items are unaffected. Metrics reset and will warm up based on new items.
-          </p>
+      <div className="px-5 py-3 border-t border-slate-100 text-[11px] text-slate-400 leading-relaxed">
+          Changes affect future items only. Current items are unaffected.
       </div>
 
       {/* Delete Confirmation */}

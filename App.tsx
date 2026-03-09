@@ -33,7 +33,7 @@ import { shouldRenderProcessFlowSessionPanel } from './sessionSupport';
 import { getLastCanvasId } from './canvas-storage';
 import { CanvasMetadata } from './types';
 
-import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X, CloudSun } from 'lucide-react';
+import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X, CloudSun, Undo2 } from 'lucide-react';
 
 const nodeTypes = {
   processNode: ProcessNode,
@@ -481,9 +481,12 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
     deleteNode,
   } = useStore();
   const readOnlyMode = useStore((state) => state.readOnlyMode);
+  const canUndo = useStore((state) => state.canUndo);
+  const isRunning = useStore((state) => state.isRunning);
   const lastRunSummary = useStore((state) => state.lastRunSummary);
   const showSunMoonClock = useStore((state) => state.showSunMoonClock);
   const setShowSunMoonClock = useStore((state) => state.setShowSunMoonClock);
+  const undoEditorChange = useStore((state) => state.undoEditorChange);
   const effectiveReadOnlyMode = viewerMode || readOnlyMode;
 
   // Edge reconnection ref to track the edge being updated
@@ -510,6 +513,32 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
     setShowOnboarding(false);
     setShowModelPrimer(false);
   }, [effectiveReadOnlyMode]);
+
+  useEffect(() => {
+    if (effectiveReadOnlyMode) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isRunning) return;
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName?.toLowerCase();
+      const isTypingTarget =
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        tagName === 'select' ||
+        Boolean(target?.isContentEditable);
+
+      if (isTypingTarget) return;
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.shiftKey) return;
+      if (event.key.toLowerCase() !== 'z') return;
+
+      event.preventDefault();
+      undoEditorChange();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [effectiveReadOnlyMode, isRunning, undoEditorChange]);
 
   useEffect(() => {
     if (!lastRunSummary || lastRunSummary.outcome !== 'target_run_completed') return;
@@ -652,10 +681,10 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
 
       {showModelPrimer && !effectiveReadOnlyMode && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 max-w-[680px] w-[calc(100%-180px)]">
-          <div className="bg-white/95 backdrop-blur-md rounded-xl border border-slate-200 shadow-lg px-4 py-3">
+          <div className="bg-white backdrop-blur-md rounded-xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] px-4 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-2.5">
-                <div className="mt-0.5 w-7 h-7 rounded-lg bg-blue-50 border border-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                <div className="mt-0.5 w-7 h-7 rounded-lg bg-blue-50 border-2 border-blue-300 text-blue-600 flex items-center justify-center shrink-0">
                   <BookOpen size={14} />
                 </div>
                 <div>
@@ -666,14 +695,14 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
                       onClick={runCoffeeQuickStart}
-                      className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1.5"
+                      className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-xl border-2 border-blue-700 shadow-[2px_2px_0px_0px_rgba(29,78,216,0.8)] transition flex items-center gap-1.5 active:translate-y-[1px] active:shadow-none"
                     >
                       <PlayCircle size={12} />
                       Run Coffee Demo
                     </button>
                     <button
                       onClick={() => setShowOnboarding(true)}
-                      className="text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg transition"
+                      className="text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-xl border-2 border-slate-300 transition active:translate-y-[1px]"
                     >
                       Open Walkthrough
                     </button>
@@ -682,7 +711,7 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
               </div>
               <button
                 onClick={dismissPrimer}
-                className="p-1.5 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition shrink-0"
+                className="p-1.5 rounded-xl border border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition shrink-0"
                 title="Hide primer"
               >
                 <X size={14} />
@@ -692,36 +721,50 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
         </div>
       )}
 
-      {/* Help Button (Top Right) */}
-      {onBackToGallery && !effectiveReadOnlyMode ? (
-        <button
-          onClick={onBackToGallery}
-          className="fixed top-3 left-16 z-30 flex items-center gap-2 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-sm font-medium text-slate-700 shadow-md backdrop-blur-md transition hover:bg-white hover:text-slate-950"
-          title="Back to gallery"
-        >
-          <ArrowLeft size={15} />
-          Gallery
-        </button>
-      ) : null}
+      <div className="fixed top-3 left-16 z-30 flex items-center gap-2">
+        {onBackToGallery && !effectiveReadOnlyMode ? (
+          <button
+            onClick={onBackToGallery}
+            className="flex items-center gap-2 rounded-xl border-2 border-slate-900 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] backdrop-blur-md transition hover:bg-slate-50 hover:text-slate-950 active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
+            title="Back to gallery"
+          >
+            <ArrowLeft size={15} />
+            Gallery
+          </button>
+        ) : null}
 
-      <button
-        onClick={() => setShowHelp(!showHelp)}
-        className={`fixed top-3 z-30 p-2 rounded-xl transition ${
-          showHelp ? 'bg-blue-100 text-blue-600' : 'bg-white/90 text-slate-500 hover:bg-white hover:text-slate-700'
-        } border border-slate-200 shadow-md backdrop-blur-md`}
-        style={{ left: onBackToGallery && !effectiveReadOnlyMode ? 168 : 68 }}
-        title="Toggle Help"
-      >
-        <Info size={15} />
-      </button>
+        {!effectiveReadOnlyMode ? (
+          <button
+            onClick={undoEditorChange}
+            disabled={!canUndo || isRunning}
+            className={`p-2 rounded-xl border-2 backdrop-blur-md transition ${
+              canUndo && !isRunning
+                ? 'border-slate-900 bg-white text-slate-500 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] hover:bg-slate-50 hover:text-slate-700 active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]'
+                : 'border-slate-200 bg-white/70 text-slate-300 cursor-not-allowed'
+            }`}
+            title="Undo last editor change"
+          >
+            <Undo2 size={15} />
+          </button>
+        ) : null}
+
+        <button
+          onClick={() => setShowHelp(!showHelp)}
+          className={`p-2 rounded-xl transition ${
+            showHelp ? 'bg-blue-100 text-blue-600 border-blue-400' : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700 border-slate-900'
+          } border-2 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] backdrop-blur-md active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]`}
+          title="Toggle Help"
+        >
+          <Info size={15} />
+        </button>
+      </div>
 
       {!effectiveReadOnlyMode ? <ProcessFlowSessionPanel /> : null}
 
       {/* Help Panel (Collapsible) */}
       {showHelp && (
         <div
-          className="fixed top-14 z-30 bg-white/95 backdrop-blur p-3 rounded-xl border border-slate-200 shadow-lg text-xs text-slate-500 max-w-xs animate-in fade-in slide-in-from-left-2 duration-200"
-          style={{ left: onBackToGallery && !effectiveReadOnlyMode ? 168 : 68 }}
+          className="fixed top-14 left-16 z-30 bg-white backdrop-blur p-3 rounded-xl border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] text-xs text-slate-500 max-w-xs animate-in fade-in slide-in-from-left-2 duration-200"
         >
           <h4 className="font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
             <MousePointer2 size={12} />
