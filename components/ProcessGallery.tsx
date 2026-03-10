@@ -5,7 +5,9 @@ import {
   Factory,
   FileUp,
   FolderPlus,
+  Home,
   Layers3,
+  MessageSquare,
   Plus,
   Stethoscope,
   Workflow,
@@ -63,6 +65,20 @@ const TEMPLATE_CARDS = [
     description: 'Physical production flow with high volume, inspection, and scrap decisions.',
     icon: Factory,
     className: 'from-slate-400/20 via-stone-500/15 to-amber-400/10',
+  },
+  {
+    key: 'housingRepairs',
+    title: 'Housing Repairs',
+    description: 'A housing repairs service with triage, emergency make-safe work, and internal vs contractor routing.',
+    icon: Home,
+    className: 'from-emerald-300/20 via-lime-400/15 to-teal-400/10',
+  },
+  {
+    key: 'complaints',
+    title: 'Complaints Process',
+    description: 'A staged complaints workflow with investigation, response drafting, approval, and escalation.',
+    icon: MessageSquare,
+    className: 'from-rose-300/20 via-orange-400/15 to-amber-300/10',
   },
 ];
 
@@ -284,7 +300,7 @@ const ProcessGallery: React.FC<ProcessGalleryProps> = ({
             <p className="mt-1 text-sm text-slate-500">Curated starting points for common process teaching scenarios.</p>
           </div>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {TEMPLATE_CARDS.map((template) => {
               const Icon = template.icon;
               return (

@@ -1579,6 +1579,22 @@ describe('Store - Scenario Loading', () => {
     expect(state.edges.length).toBe(9);
   });
 
+  it('loadScenario("housingRepairs") loads the housing repairs scenario', () => {
+    useStore.getState().loadScenario('housingRepairs');
+    const state = useStore.getState();
+    expect(state.currentCanvasName).toBe('Housing Repairs Process');
+    expect(state.nodes.length).toBe(12); // 10 work/end + 2 annotations
+    expect(state.edges.length).toBe(12);
+  });
+
+  it('loadScenario("complaints") loads the complaints scenario', () => {
+    useStore.getState().loadScenario('complaints');
+    const state = useStore.getState();
+    expect(state.currentCanvasName).toBe('Complaints Handling Process');
+    expect(state.nodes.length).toBe(12); // 10 work/end + 2 annotations
+    expect(state.edges.length).toBe(11);
+  });
+
   it('loadScenario resets simulation state', () => {
     // Run some ticks first
     setupLinearFlow();
