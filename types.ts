@@ -52,6 +52,17 @@ export interface WorkingHoursConfig {
 export type FlowMode = 'push' | 'pull';
 export type CapacityMode = 'local' | 'sharedAllocation';
 export type SharedCapacityInputMode = 'fte' | 'hours';
+export type ResourcePoolAvatarId = 'orbit' | 'bloom' | 'spark' | 'wave' | 'stack' | 'kite' | 'bot' | 'brain';
+export type ResourcePoolColorId = 'amber' | 'rose' | 'orange' | 'sky' | 'mint' | 'lilac' | 'blue' | 'orchid';
+
+export interface ResourcePool {
+  id: string;
+  name: string;
+  inputMode: SharedCapacityInputMode;
+  capacityValue: number;
+  avatarId?: ResourcePoolAvatarId;
+  colorId?: ResourcePoolColorId;
+}
 
 export const DEFAULT_WORKING_HOURS: WorkingHoursConfig = {
   enabled: true,
@@ -63,7 +74,8 @@ export interface ProcessNodeData {
   label: string;
   processingTime: number; // Time to process one item (in ticks)
   resources: number; // Concurrent capacity
-  allocationPercent?: number; // Share of global capacity used by this node when shared allocation mode is enabled
+  allocationPercent?: number; // Share of the selected shared pool used by this node when shared allocation mode is enabled
+  resourcePoolId?: string; // Shared resource pool this node draws from when shared allocation mode is enabled
   batchSize?: number; // Items that must begin together when this node batches work
   flowMode?: FlowMode; // Push accepts immediately; pull caps local WIP at resources and blocks upstream overflow
   pullOpenSlotsRequired?: number; // Legacy saved setting retained for compatibility; pull now uses resource count as its cap
@@ -174,6 +186,20 @@ export interface KpiBucket {
 }
 
 export type KpiHistoryByPeriod = Record<KpiPeriod, KpiBucket[]>;
+
+export interface PoolUtilizationBucket {
+  resourcePoolId: string;
+  period: KpiPeriod;
+  periodIndex: number;
+  startTick: number;
+  endTick: number;
+  label: string;
+  busyResourceTicks: number;
+  availableResourceTicks: number;
+  resourceUtilizationAvg: number;
+}
+
+export type PoolUtilizationHistoryByPeriod = Record<KpiPeriod, Record<string, PoolUtilizationBucket[]>>;
 
 export interface ResourceUtilizationSample {
   tick: number;
@@ -351,6 +377,7 @@ export interface ItemCounts {
 
 export interface CanvasFlowData {
   workspaceId?: string;
+  autosaveDraft?: boolean;
   nodes: AppNode[];
   edges: Edge[];
   itemConfig: ItemConfig;
@@ -364,6 +391,7 @@ export interface CanvasFlowData {
   capacityMode: CapacityMode;
   sharedCapacityInputMode: SharedCapacityInputMode;
   sharedCapacityValue: number;
+  resourcePools: ResourcePool[];
   simulationSeed: number;
   kpiTargets: KpiTargets;
 }
@@ -433,6 +461,7 @@ export interface SimulationState {
   periodCompleted: number;
   kpiHistoryByPeriod: KpiHistoryByPeriod;
   nodeUtilizationHistoryByNode: NodeUtilizationHistoryByNode;
+  poolUtilizationHistoryByPeriod: PoolUtilizationHistoryByPeriod;
 
   // Performance: Pre-computed derived state
   itemsByNode: Map<string, ProcessItem[]>;
@@ -448,6 +477,7 @@ export interface SimulationState {
   capacityMode: CapacityMode;
   sharedCapacityInputMode: SharedCapacityInputMode;
   sharedCapacityValue: number;
+  resourcePools: ResourcePool[];
 
   // Real-time simulation configuration
   durationPreset: string; // Key for DURATION_PRESETS
@@ -459,6 +489,7 @@ export interface SimulationState {
   simulationSeed: number;
   kpiTargets: KpiTargets;
   showSunMoonClock: boolean;
+  showSharedResourcesCard: boolean;
   readOnlyMode: boolean;
   runStartedAtMs: number | null;
   lastRunSummary: RunSummary | null;
@@ -491,6 +522,9 @@ export interface SimulationState {
   setCapacityMode: (mode: CapacityMode) => void;
   setSharedCapacityInputMode: (mode: SharedCapacityInputMode) => void;
   setSharedCapacityValue: (value: number) => void;
+  addResourcePool: () => void;
+  updateResourcePool: (id: string, patch: Partial<ResourcePool>) => void;
+  deleteResourcePool: (id: string) => void;
   setDurationPreset: (preset: string) => void;
   setSpeedPreset: (preset: string) => void;
   setAutoStop: (enabled: boolean) => void;
@@ -498,6 +532,7 @@ export interface SimulationState {
   setKpiTargets: (targets: Partial<KpiTargets>) => void;
   randomizeSimulationSeed: () => void;
   setShowSunMoonClock: (enabled: boolean) => void;
+  setShowSharedResourcesCard: (enabled: boolean) => void;
   setReadOnlyMode: (enabled: boolean) => void;
   undoEditorChange: () => void;
 

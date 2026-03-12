@@ -5,7 +5,9 @@ import { useStore } from '../store';
 import { Play, Zap, Clock, Users, AlertTriangle, User, Box, FileText, Trash2 } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
 import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
-import { computeNodeLiveUtilizationForLoad, getLocalCapacityUnits, getNodeCapacityProfile } from '../capacityModel';
+import { computeNodeLiveUtilizationForLoad, getLocalCapacityUnits, getNodeCapacityProfile, getResourcePools } from '../capacityModel';
+import { RESOURCE_POOL_COLOR_THEMES } from '../resourcePoolVisuals';
+import ResourcePoolAvatar from './ResourcePoolAvatar';
 
 const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup)
@@ -19,6 +21,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const capacityMode = useStore((state) => state.capacityMode);
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
+  const resourcePools = useStore((state) => state.resourcePools);
   const blockedInboundCount = useStore((state) => state.blockedCountsByTarget.get(id) || 0);
   const rollingUtilization = useStore((state) => getRollingNodeUtilization(state.nodeUtilizationHistoryByNode, id));
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
@@ -28,9 +31,21 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
         capacityMode,
         sharedCapacityInputMode,
         sharedCapacityValue,
+        resourcePools,
       })
     : null;
   const usesSharedAllocation = capacityProfile?.usesSharedAllocation ?? false;
+  const normalizedResourcePools = getResourcePools({
+    resourcePools,
+    sharedCapacityInputMode,
+    sharedCapacityValue,
+  });
+  const selectedResourcePool = usesSharedAllocation
+    ? normalizedResourcePools.find((pool) => pool.id === capacityProfile?.resourcePoolId) || normalizedResourcePools[0]
+    : null;
+  const selectedResourceTheme = selectedResourcePool
+    ? RESOURCE_POOL_COLOR_THEMES[selectedResourcePool.colorId!]
+    : null;
   const displayCapacity = Math.max(
     0,
     usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
@@ -152,6 +167,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const handleStyle = readOnlyMode
     ? { ...handleBaseStyle, opacity: 0, pointerEvents: 'none' as const }
     : { ...handleBaseStyle, ...handleVisibility };
+  const topHandleStyle = usesSharedAllocation ? { ...handleStyle, top: '-16px' } : handleStyle;
 
   const handleDelete = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -160,10 +176,31 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   return (
     <div
-      className={`group w-72 bg-white rounded-xl border-2 transition-all duration-300 relative shadow-[4px_4px_0px_0px_rgba(16,185,129,0.3)] ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${bgOverlay}`}
+      className={`group relative w-72 overflow-visible bg-white rounded-xl border-2 transition-all duration-300 shadow-[4px_4px_0px_0px_rgba(16,185,129,0.3)] ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${bgOverlay}`}
     >
+      {usesSharedAllocation && selectedResourcePool && selectedResourceTheme ? (
+        <div
+          className="absolute left-3 -top-[30px] z-40 flex max-w-[calc(100%-6.5rem)] items-center gap-1.5 rounded-t-xl border-2 border-b-0 border-slate-900 px-2 py-1"
+          style={{ backgroundColor: selectedResourceTheme.tab || selectedResourceTheme.panel }}
+          title={`${selectedResourcePool.name} · ${(capacityProfile?.allocatedHoursPerDay ?? 0).toFixed(1)}h/day shared`}
+        >
+          <ResourcePoolAvatar
+            avatarId={selectedResourcePool.avatarId!}
+            colorId={selectedResourcePool.colorId}
+            size={22}
+            className="shrink-0"
+          />
+          <div className="truncate text-[10px] font-black uppercase tracking-[0.06em] text-slate-900">
+            {selectedResourcePool.name}
+          </div>
+          <div className="shrink-0 text-[9px] font-bold text-slate-600">
+            {(capacityProfile?.allocatedHoursPerDay ?? 0).toFixed(1)}h/d
+          </div>
+        </div>
+      ) : null}
+
       {/* Badge */}
-      <div className="absolute -top-3 left-4 bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-full border-2 border-emerald-800 shadow-[2px_2px_0px_0px_rgba(6,95,70,0.8)] z-50 flex items-center gap-1 uppercase tracking-wider">
+      <div className={`absolute -top-3 bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-full border-2 border-emerald-800 shadow-[2px_2px_0px_0px_rgba(6,95,70,0.8)] z-50 flex items-center gap-1 uppercase tracking-wider ${usesSharedAllocation ? 'right-12' : 'left-4'}`}>
           <Play size={10} fill="currentColor" /> Start
       </div>
 
@@ -188,7 +225,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       <Handle type="source" position={Position.Right} id="right" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
       <Handle type="source" position={Position.Bottom} id="bottom" className={handleClassName} style={handleStyle} />
       <Handle type="source" position={Position.Left} id="left" className={handleClassName} style={handleStyle} />
-      <Handle type="source" position={Position.Top} id="top" className={handleClassName} style={handleStyle} />
+      <Handle type="source" position={Position.Top} id="top" className={handleClassName} style={topHandleStyle} />
 
       <div className="overflow-hidden rounded-[10px] w-full h-full">
           {/* Header */}
@@ -236,11 +273,6 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                           <span className="tabular-nums">{rollingUtilization.toFixed(0)}%</span>
                         </span>
                     </div>
-                    {usesSharedAllocation ? (
-                      <div className="flex items-center gap-1 text-[10px] text-blue-700 font-medium mt-1">
-                        <Users size={10} /> {capacityProfile?.allocatedHoursPerDay.toFixed(1)}h/day shared
-                      </div>
-                    ) : null}
                     {blockedInboundCount > 0 ? (
                       <div className="flex items-center gap-1 text-[10px] text-amber-700 font-medium mt-1">
                         <Users size={10} /> Incoming blocked {blockedInboundCount}

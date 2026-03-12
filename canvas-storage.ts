@@ -4,6 +4,11 @@ const DB_NAME = 'processFlowSimulator';
 const DB_VERSION = 1;
 const STORE_NAME = 'canvases';
 const LAST_CANVAS_KEY = 'lastCanvasId';
+export const AUTOSAVE_DRAFT_CANVAS_ID = '__autosave_draft__';
+
+export function isAutosaveDraftCanvasId(id: string | null | undefined): boolean {
+  return id === AUTOSAVE_DRAFT_CANVAS_ID;
+}
 
 function hasIndexedDb(): boolean {
   return typeof indexedDB !== 'undefined';
@@ -40,6 +45,7 @@ export async function getAllCanvases(): Promise<CanvasMetadata[]> {
 
     request.onsuccess = () => {
       const canvases = (request.result as SavedCanvas[])
+        .filter(({ id, data }) => !isAutosaveDraftCanvasId(id) && data?.autosaveDraft !== true)
         .map(({ id, name, updatedAt, data }) => ({
           id,
           name,

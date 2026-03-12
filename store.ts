@@ -37,6 +37,9 @@ import {
   KpiTargets,
   KPI_PERIODS,
   NodeUtilizationHistoryByNode,
+  PoolUtilizationBucket,
+  PoolUtilizationHistoryByPeriod,
+  ResourcePool,
   SharedCapacityInputMode,
   WorkingHoursConfig,
   RunSummary,
@@ -51,17 +54,30 @@ import { showToast } from './components/Toast';
 import { computeLeadMetrics, computeThroughputFromCompletions, NODE_UTILIZATION_ROLLING_WINDOW_TICKS } from './metrics';
 import {
   clampAllocationPercent,
+  createDefaultResourcePool,
+  DEFAULT_RESOURCE_POOL_ID,
   DEFAULT_SHARED_CAPACITY_INPUT_MODE,
   DEFAULT_SHARED_CAPACITY_VALUE,
+  getDefaultResourcePool,
   getLocalCapacityUnits,
   getNodeCapacityProfile,
+  getNodeResourcePoolId,
+  getResourcePools,
 } from './capacityModel';
+import {
+  getDefaultResourcePoolAvatarId,
+  getDefaultResourcePoolColorId,
+  normalizeResourcePoolAvatarId,
+  normalizeResourcePoolColorId,
+} from './resourcePoolVisuals';
 import { getProcessBoxSdk } from './processBoxSdk';
 import { createRandomSeed, nextMulberry32, normalizeSeed } from './rng';
 import {
+  AUTOSAVE_DRAFT_CANVAS_ID,
   deleteCanvas,
   getAllCanvases,
   getCanvas,
+  isAutosaveDraftCanvasId,
   getLastCanvasId,
   renameCanvas,
   saveCanvas,
@@ -101,6 +117,7 @@ const MAX_VISUAL_TRANSFERS = 120;
 const MAX_UNDO_SNAPSHOTS = 40;
 const AUTOSAVE_DELAY_MS = 8000;
 const SUN_MOON_CLOCK_PREF_KEY = 'pf-show-sun-moon-clock';
+const SHARED_RESOURCES_CARD_PREF_KEY = 'pf-show-shared-resources-card';
 const createDefaultWorkingHours = (): WorkingHoursConfig => ({ ...DEFAULT_WORKING_HOURS });
 const createEmptyItemCounts = () => ({
   wip: 0,
@@ -117,6 +134,57 @@ const createEmptyKpiHistory = (): KpiHistoryByPeriod => ({
   month: [],
 });
 const createEmptyNodeUtilizationHistory = (): NodeUtilizationHistoryByNode => ({});
+const createEmptyPoolUtilizationHistory = (): PoolUtilizationHistoryByPeriod => ({
+  hour: {},
+  day: {},
+  week: {},
+  month: {},
+});
+const getNormalizedResourcePools = (
+  resourcePools?: ResourcePool[],
+  sharedCapacityInputMode: SharedCapacityInputMode = DEFAULT_SHARED_CAPACITY_INPUT_MODE,
+  sharedCapacityValue: number = DEFAULT_SHARED_CAPACITY_VALUE,
+) =>
+  getResourcePools({
+    resourcePools,
+    sharedCapacityInputMode,
+    sharedCapacityValue,
+  });
+
+const getLegacySharedCapacityFields = (resourcePools: ResourcePool[]) => {
+  const defaultPool = resourcePools.find((pool) => pool.id === DEFAULT_RESOURCE_POOL_ID) || createDefaultResourcePool();
+  return {
+    sharedCapacityInputMode: defaultPool.inputMode === 'hours' ? 'hours' : 'fte',
+    sharedCapacityValue: Number.isFinite(defaultPool.capacityValue)
+      ? Math.max(0, Number(defaultPool.capacityValue))
+      : DEFAULT_SHARED_CAPACITY_VALUE,
+  };
+};
+
+const normalizeNodesForResourcePools = (
+  nodes: AppNode[],
+  resourcePools: ResourcePool[],
+): AppNode[] => {
+  const settings = {
+    resourcePools,
+    sharedCapacityInputMode: getLegacySharedCapacityFields(resourcePools).sharedCapacityInputMode,
+    sharedCapacityValue: getLegacySharedCapacityFields(resourcePools).sharedCapacityValue,
+  };
+
+  return nodes.map((node) => {
+    if (node.type !== 'processNode' && node.type !== 'startNode') return node;
+    const pData = node.data as ProcessNodeData;
+    const resolvedPoolId = getNodeResourcePoolId(pData, settings);
+    if (pData.resourcePoolId === resolvedPoolId) return node;
+    return {
+      ...node,
+      data: {
+        ...pData,
+        resourcePoolId: resolvedPoolId,
+      },
+    } as AppNode;
+  });
+};
 
 type EditorSnapshot = Pick<
   SimulationState,
@@ -133,6 +201,7 @@ type EditorSnapshot = Pick<
   | 'capacityMode'
   | 'sharedCapacityInputMode'
   | 'sharedCapacityValue'
+  | 'resourcePools'
   | 'simulationSeed'
   | 'kpiTargets'
   | 'currentCanvasId'
@@ -164,6 +233,7 @@ const createEditorSnapshot = (state: EditorSnapshot): EditorSnapshot =>
     capacityMode: state.capacityMode,
     sharedCapacityInputMode: state.sharedCapacityInputMode,
     sharedCapacityValue: state.sharedCapacityValue,
+    resourcePools: state.resourcePools,
     simulationSeed: state.simulationSeed,
     kpiTargets: state.kpiTargets,
     currentCanvasId: state.currentCanvasId,
@@ -264,6 +334,62 @@ const upsertKpiBucket = (
   return nextHistory;
 };
 
+const upsertPoolUtilizationBucket = (
+  history: PoolUtilizationHistoryByPeriod,
+  period: KpiPeriod,
+  resourcePoolId: string,
+  tick: number,
+  patch: Pick<PoolUtilizationBucket, 'busyResourceTicks' | 'availableResourceTicks'>,
+): PoolUtilizationHistoryByPeriod => {
+  const nextHistory = {
+    ...history,
+    [period]: {
+      ...history[period],
+    },
+  };
+  const ticksPerPeriod = getKpiPeriodTicks(period);
+  const periodIndex = Math.floor(Math.max(0, tick) / ticksPerPeriod);
+  const startTick = periodIndex * ticksPerPeriod;
+  const endTick = startTick + ticksPerPeriod;
+  const currentBuckets = [...(nextHistory[period][resourcePoolId] || [])];
+  const lastBucket = currentBuckets[currentBuckets.length - 1];
+  const baseBucket: PoolUtilizationBucket =
+    lastBucket && lastBucket.periodIndex === periodIndex
+      ? lastBucket
+      : {
+          resourcePoolId,
+          period,
+          periodIndex,
+          startTick,
+          endTick,
+          label: getKpiPeriodLabel(period, periodIndex),
+          busyResourceTicks: 0,
+          availableResourceTicks: 0,
+          resourceUtilizationAvg: 0,
+        };
+
+  const nextBucket: PoolUtilizationBucket = {
+    ...baseBucket,
+    busyResourceTicks: baseBucket.busyResourceTicks + patch.busyResourceTicks,
+    availableResourceTicks: baseBucket.availableResourceTicks + patch.availableResourceTicks,
+    resourceUtilizationAvg:
+      baseBucket.availableResourceTicks + patch.availableResourceTicks > 0
+        ? ((baseBucket.busyResourceTicks + patch.busyResourceTicks) /
+            (baseBucket.availableResourceTicks + patch.availableResourceTicks)) *
+          100
+        : 0,
+  };
+
+  if (lastBucket && lastBucket.periodIndex === periodIndex) {
+    currentBuckets[currentBuckets.length - 1] = nextBucket;
+  } else {
+    currentBuckets.push(nextBucket);
+  }
+
+  nextHistory[period][resourcePoolId] = currentBuckets;
+  return nextHistory;
+};
+
 const clampPercent = (value: number): number => {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, value));
@@ -284,6 +410,26 @@ const persistShowSunMoonClockPreference = (enabled: boolean) => {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(SUN_MOON_CLOCK_PREF_KEY, enabled ? '1' : '0');
+  } catch {
+    // ignore local preference write failures
+  }
+};
+
+const readSharedResourcesCardPreference = () => {
+  if (typeof window === 'undefined') return true;
+  try {
+    const raw = window.localStorage.getItem(SHARED_RESOURCES_CARD_PREF_KEY);
+    if (raw === null) return true;
+    return raw !== '0';
+  } catch {
+    return true;
+  }
+};
+
+const persistSharedResourcesCardPreference = (enabled: boolean) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SHARED_RESOURCES_CARD_PREF_KEY, enabled ? '1' : '0');
   } catch {
     // ignore local preference write failures
   }
@@ -330,6 +476,13 @@ const normalizeProcessNodeSettings = (
   if (Object.prototype.hasOwnProperty.call(nextData, 'allocationPercent')) {
     normalized.allocationPercent = clampAllocationPercent(Number(merged.allocationPercent));
   }
+  if (Object.prototype.hasOwnProperty.call(nextData, 'resourcePoolId')) {
+    const resourcePoolId =
+      typeof merged.resourcePoolId === 'string' && merged.resourcePoolId.trim()
+        ? merged.resourcePoolId.trim()
+        : undefined;
+    normalized.resourcePoolId = resourcePoolId;
+  }
 
   return normalized;
 };
@@ -371,6 +524,7 @@ const buildRunStateReset = () => ({
   periodCompleted: 0,
   kpiHistoryByPeriod: createEmptyKpiHistory(),
   nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
+  poolUtilizationHistoryByPeriod: createEmptyPoolUtilizationHistory(),
   itemsByNode: new Map<string, ProcessItem[]>(),
   blockedCountsByTarget: new Map<string, number>(),
   itemCounts: createEmptyItemCounts(),
@@ -429,6 +583,7 @@ const shouldResetMetricsForNodeData = (
   }
   if ('demandTarget' in nextPartial && nextPartial.demandTarget !== prev.demandTarget) return true;
   if ('allocationPercent' in nextPartial && nextPartial.allocationPercent !== prev.allocationPercent) return true;
+  if ('resourcePoolId' in nextPartial && nextPartial.resourcePoolId !== prev.resourcePoolId) return true;
   if ('workingHours' in nextPartial) {
     const nextWorking = nextPartial.workingHours
       ? { ...(prev.workingHours || DEFAULT_WORKING_HOURS), ...nextPartial.workingHours }
@@ -455,6 +610,7 @@ const buildMetricsReset = (state: SimulationState) => ({
   metricsEpochTick: state.tickCount,
   kpiHistoryByPeriod: createEmptyKpiHistory(),
   nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
+  poolUtilizationHistoryByPeriod: createEmptyPoolUtilizationHistory(),
 });
 
 const getDemandDurationPreset = (unit: DemandUnit): string => {
@@ -502,6 +658,11 @@ const parseCloudSaveUpdatedAt = (entry: any): number => {
 const createWorkspaceId = () => `workspace_${generateId()}`;
 
 const ensureWorkspaceId = (candidate: unknown): string => normalizeWorkspaceId(candidate) || createWorkspaceId();
+const isAutosaveDraftSnapshot = (snapshot: any, workspaceId?: unknown): boolean =>
+  snapshot?.autosaveDraft === true ||
+  isAutosaveDraftCanvasId(
+    normalizeWorkspaceId(snapshot?.workspaceId) || normalizeWorkspaceId(workspaceId),
+  );
 
 const getDefaultSourceHandleForNode = (node?: AppNode): string | undefined => {
   if (!node) return undefined;
@@ -571,6 +732,7 @@ const createFlowSnapshot = (
     | 'capacityMode'
     | 'sharedCapacityInputMode'
     | 'sharedCapacityValue'
+    | 'resourcePools'
     | 'simulationSeed'
     | 'kpiTargets'
   >,
@@ -580,6 +742,7 @@ const createFlowSnapshot = (
   } = {},
 ): CanvasFlowData & { canvasName: string } => ({
   workspaceId: normalizeWorkspaceId(options.workspaceId) || undefined,
+  autosaveDraft: false,
   nodes: state.nodes,
   edges: state.edges,
   itemConfig: state.itemConfig,
@@ -593,6 +756,7 @@ const createFlowSnapshot = (
   capacityMode: state.capacityMode,
   sharedCapacityInputMode: state.sharedCapacityInputMode,
   sharedCapacityValue: state.sharedCapacityValue,
+  resourcePools: state.resourcePools,
   simulationSeed: state.simulationSeed,
   kpiTargets: state.kpiTargets,
   canvasName: normalizeCanvasName(options.canvasName),
@@ -639,17 +803,25 @@ const applyCloudFlowSnapshot = (
   const sharedCapacityValue = Number.isFinite(snapshot.sharedCapacityValue)
     ? Math.max(0, Number(snapshot.sharedCapacityValue))
     : DEFAULT_SHARED_CAPACITY_VALUE;
+  const resourcePools = getNormalizedResourcePools(
+    snapshot.resourcePools as ResourcePool[] | undefined,
+    sharedCapacityInputMode,
+    sharedCapacityValue,
+  );
+  const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
   const simulationSeed = normalizeSeed(snapshot.simulationSeed, getState().simulationSeed);
   const kpiTargets = {
     ...getState().kpiTargets,
     ...(snapshot.kpiTargets || {}),
   };
   const nextCanvasName = normalizeCanvasName(options.canvasName || snapshot.canvasName || getState().currentCanvasName);
-  const normalizedEdges = normalizeFlowEdgeHandles<Edge>(snapshot.nodes as AppNode[], snapshot.edges as Edge[]);
-  const nextNodes = resetRuntimeNodeState(snapshot.nodes as AppNode[], normalizedEdges, {
+  const normalizedNodesForPools = normalizeNodesForResourcePools(snapshot.nodes as AppNode[], resourcePools);
+  const normalizedEdges = normalizeFlowEdgeHandles<Edge>(normalizedNodesForPools as AppNode[], snapshot.edges as Edge[]);
+  const nextNodes = resetRuntimeNodeState(normalizedNodesForPools as AppNode[], normalizedEdges, {
     capacityMode,
-    sharedCapacityInputMode,
-    sharedCapacityValue,
+    sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+    sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+    resourcePools,
   });
   resetSimulationRng(simulationSeed);
   clearVisualTransferCleanupTimers();
@@ -670,8 +842,9 @@ const applyCloudFlowSnapshot = (
     demandMode,
     demandUnit,
     capacityMode,
-    sharedCapacityInputMode,
-    sharedCapacityValue,
+    sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+    sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+    resourcePools,
     demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
     simulationSeed,
     kpiTargets,
@@ -692,7 +865,18 @@ const applyCloudFlowSnapshot = (
 
 // --- SCENARIO DATA ---
 
-const SCENARIOS = {
+interface ScenarioDefinition {
+  nodes: AppNode[];
+  edges: Edge[];
+  demandMode?: DemandMode;
+  demandUnit?: DemandUnit;
+  capacityMode?: CapacityMode;
+  sharedCapacityInputMode?: SharedCapacityInputMode;
+  sharedCapacityValue?: number;
+  resourcePools?: ResourcePool[];
+}
+
+const SCENARIOS: Record<string, ScenarioDefinition> = {
   'empty': { nodes: [], edges: [] },
   'coffee': {
     nodes: [
@@ -796,16 +980,53 @@ const SCENARIOS = {
     ]
   },
   'housingRepairs': {
+    capacityMode: 'sharedAllocation',
+    sharedCapacityInputMode: 'fte',
+    sharedCapacityValue: 3,
+    resourcePools: [
+      {
+        id: DEFAULT_RESOURCE_POOL_ID,
+        name: 'Customer Service Center',
+        inputMode: 'fte',
+        capacityValue: 3,
+        avatarId: 'orbit',
+        colorId: 'amber',
+      },
+      {
+        id: 'maintenance-coordinators',
+        name: 'Maintenance Coordinators',
+        inputMode: 'fte',
+        capacityValue: 2,
+        avatarId: 'brain',
+        colorId: 'lilac',
+      },
+      {
+        id: 'direct-maintenance',
+        name: 'Direct Maintenance',
+        inputMode: 'fte',
+        capacityValue: 6,
+        avatarId: 'stack',
+        colorId: 'mint',
+      },
+      {
+        id: 'contractors',
+        name: 'Contractors',
+        inputMode: 'fte',
+        capacityValue: 5,
+        avatarId: 'bot',
+        colorId: 'orange',
+      },
+    ],
     nodes: [
-      { id: 'hr-start', type: 'startNode', position: { x: 60, y: 220 }, data: { label: 'Resident Repair Contact', processingTime: 4, resources: 3, quality: 1.0, variability: 0.05, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {}, sourceConfig: { enabled: true, interval: 18, batchSize: 1 } } },
-      { id: 'hr-triage', type: 'processNode', position: { x: 420, y: 220 }, data: { label: 'Triage & Raise Request', processingTime: 8, resources: 3, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: { 'hr-planning': 8, 'hr-make-safe': 2 } } },
-      { id: 'hr-planning', type: 'processNode', position: { x: 840, y: 120 }, data: { label: 'Repair Planning', processingTime: 10, resources: 2, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: { 'hr-internal-schedule': 5, 'hr-contractor-dispatch': 5 } } },
-      { id: 'hr-make-safe', type: 'processNode', position: { x: 840, y: 360 }, data: { label: 'Emergency Make Safe', processingTime: 12, resources: 2, quality: 0.98, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
-      { id: 'hr-internal-schedule', type: 'processNode', position: { x: 1260, y: 60 }, data: { label: 'Schedule Internal Team', processingTime: 6, resources: 2, quality: 1.0, variability: 0.05, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
-      { id: 'hr-contractor-dispatch', type: 'processNode', position: { x: 1260, y: 240 }, data: { label: 'Dispatch Contractor', processingTime: 7, resources: 2, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
-      { id: 'hr-internal-visit', type: 'processNode', position: { x: 1680, y: 60 }, data: { label: 'Internal Repair Visit', processingTime: 18, resources: 3, quality: 0.97, variability: 0.15, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
-      { id: 'hr-contractor-visit', type: 'processNode', position: { x: 1680, y: 240 }, data: { label: 'Contractor Repair Visit', processingTime: 24, resources: 2, quality: 0.96, variability: 0.2, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
-      { id: 'hr-resident-confirm', type: 'processNode', position: { x: 2100, y: 160 }, data: { label: 'Resident Confirmation', processingTime: 5, resources: 2, quality: 1.0, variability: 0.05, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: { 'hr-end': 17, 'hr-planning': 3 } } },
+      { id: 'hr-start', type: 'startNode', position: { x: 60, y: 220 }, data: { label: 'Resident Repair Contact', processingTime: 4, resources: 3, resourcePoolId: DEFAULT_RESOURCE_POOL_ID, allocationPercent: 25, quality: 1.0, variability: 0.05, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {}, sourceConfig: { enabled: true, interval: 18, batchSize: 1 } } },
+      { id: 'hr-triage', type: 'processNode', position: { x: 420, y: 220 }, data: { label: 'Triage & Raise Request', processingTime: 8, resources: 3, resourcePoolId: DEFAULT_RESOURCE_POOL_ID, allocationPercent: 50, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: { 'hr-planning': 8, 'hr-make-safe': 2 } } },
+      { id: 'hr-planning', type: 'processNode', position: { x: 840, y: 120 }, data: { label: 'Repair Planning', processingTime: 10, resources: 2, resourcePoolId: 'maintenance-coordinators', allocationPercent: 45, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: { 'hr-internal-schedule': 5, 'hr-contractor-dispatch': 5 } } },
+      { id: 'hr-make-safe', type: 'processNode', position: { x: 840, y: 360 }, data: { label: 'Emergency Make Safe', processingTime: 12, resources: 2, resourcePoolId: 'direct-maintenance', allocationPercent: 35, quality: 0.98, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'hr-internal-schedule', type: 'processNode', position: { x: 1260, y: 60 }, data: { label: 'Schedule Internal Team', processingTime: 6, resources: 2, resourcePoolId: 'maintenance-coordinators', allocationPercent: 25, quality: 1.0, variability: 0.05, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'hr-contractor-dispatch', type: 'processNode', position: { x: 1260, y: 240 }, data: { label: 'Dispatch Contractor', processingTime: 7, resources: 2, resourcePoolId: 'maintenance-coordinators', allocationPercent: 30, quality: 1.0, variability: 0.1, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'hr-internal-visit', type: 'processNode', position: { x: 1680, y: 60 }, data: { label: 'Internal Repair Visit', processingTime: 18, resources: 3, resourcePoolId: 'direct-maintenance', allocationPercent: 65, quality: 0.97, variability: 0.15, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'hr-contractor-visit', type: 'processNode', position: { x: 1680, y: 240 }, data: { label: 'Contractor Repair Visit', processingTime: 24, resources: 2, resourcePoolId: 'contractors', allocationPercent: 100, quality: 0.96, variability: 0.2, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
+      { id: 'hr-resident-confirm', type: 'processNode', position: { x: 2100, y: 160 }, data: { label: 'Resident Confirmation', processingTime: 5, resources: 2, resourcePoolId: DEFAULT_RESOURCE_POOL_ID, allocationPercent: 25, quality: 1.0, variability: 0.05, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: { 'hr-end': 17, 'hr-planning': 3 } } },
       { id: 'hr-end', type: 'endNode', position: { x: 2520, y: 160 }, data: { label: 'Repair Closed', processingTime: 0, resources: 999, quality: 1.0, variability: 0, stats: { processed: 0, failed: 0, maxQueue: 0 }, routingWeights: {} } },
       { id: 'hr-note-1', type: 'annotationNode', position: { x: 830, y: 560 }, data: { label: 'Around 20% of contacts need an immediate make-safe action before normal planning.' } },
       { id: 'hr-note-2', type: 'annotationNode', position: { x: 1700, y: 500 }, data: { label: 'Resident confirmation sends a small share of jobs back for another planned visit.' } },
@@ -952,6 +1173,7 @@ const buildNodeCapacityProfiles = (
     capacityMode: CapacityMode;
     sharedCapacityInputMode: SharedCapacityInputMode;
     sharedCapacityValue: number;
+    resourcePools: ResourcePool[];
   }
 ) => {
   const profiles = new Map<string, ReturnType<typeof getNodeCapacityProfile>>();
@@ -1006,6 +1228,7 @@ const applyValidationToNodes = (
     capacityMode: CapacityMode;
     sharedCapacityInputMode: SharedCapacityInputMode;
     sharedCapacityValue: number;
+    resourcePools: ResourcePool[];
   }
 ): AppNode[] => {
   const edgesBySource = buildEdgesBySource(edges);
@@ -1028,14 +1251,20 @@ const applyValidationToNodes = (
 };
 
 const reconcileGraphState = (
-  state: Pick<SimulationState, 'items' | 'edges' | 'nodes' | 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue'>,
+  state: Pick<SimulationState, 'items' | 'edges' | 'nodes' | 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue' | 'resourcePools'>,
   nextNodes: AppNode[],
   nextEdges: Edge[],
 ) => {
-  const normalizedEdges = normalizeGraphEdges(nextNodes, nextEdges);
-  const nextItems = reconcileItemsForGraph(state.items, nextNodes, normalizedEdges);
+  const resourcePools = getNormalizedResourcePools(
+    state.resourcePools,
+    state.sharedCapacityInputMode,
+    state.sharedCapacityValue,
+  );
+  const normalizedNodes = normalizeNodesForResourcePools(nextNodes, resourcePools);
+  const normalizedEdges = normalizeGraphEdges(normalizedNodes, nextEdges);
+  const nextItems = reconcileItemsForGraph(state.items, normalizedNodes, normalizedEdges);
   return {
-    nodes: applyValidationToNodes(nextNodes, normalizedEdges, getSharedCapacitySettings(state)),
+    nodes: applyValidationToNodes(normalizedNodes, normalizedEdges, getSharedCapacitySettings(state)),
     edges: normalizedEdges,
     items: nextItems,
     ...computeDerivedState(nextItems),
@@ -1049,6 +1278,7 @@ const resetRuntimeNodeState = (
     capacityMode: CapacityMode;
     sharedCapacityInputMode: SharedCapacityInputMode;
     sharedCapacityValue: number;
+    resourcePools: ResourcePool[];
   }
 ): AppNode[] =>
   applyValidationToNodes(
@@ -1079,11 +1309,12 @@ const resetRuntimeNodeState = (
   );
 
 const getSharedCapacitySettings = (
-  state: Pick<SimulationState, 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue'>
+  state: Pick<SimulationState, 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue' | 'resourcePools'>
 ) => ({
   capacityMode: state.capacityMode,
   sharedCapacityInputMode: state.sharedCapacityInputMode,
   sharedCapacityValue: state.sharedCapacityValue,
+  resourcePools: state.resourcePools,
 });
 
 const resolveBlockedItemTarget = (
@@ -1249,13 +1480,23 @@ const restoreEditorSnapshot = (
 ): Partial<SimulationState> => {
   const durationConfig = DURATION_PRESETS[snapshot.durationPreset] || DURATION_PRESETS.unlimited;
   const speedConfig = SPEED_PRESETS.find((preset) => preset.key === snapshot.speedPreset) || SPEED_PRESETS[1];
-  const clonedNodes = cloneSerializable(snapshot.nodes) as AppNode[];
+  const resourcePools = getNormalizedResourcePools(
+    snapshot.resourcePools,
+    snapshot.sharedCapacityInputMode,
+    snapshot.sharedCapacityValue,
+  );
+  const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+  const clonedNodes = normalizeNodesForResourcePools(
+    cloneSerializable(snapshot.nodes) as AppNode[],
+    resourcePools,
+  );
   const clonedEdges = cloneSerializable(snapshot.edges) as Edge[];
   const normalizedEdges = normalizeFlowEdgeHandles(clonedNodes, clonedEdges);
   const restoredNodes = resetRuntimeNodeState(clonedNodes, normalizedEdges, {
     capacityMode: snapshot.capacityMode,
-    sharedCapacityInputMode: snapshot.sharedCapacityInputMode,
-    sharedCapacityValue: snapshot.sharedCapacityValue,
+    sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+    sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+    resourcePools,
   });
   resetSimulationRng(snapshot.simulationSeed);
   clearVisualTransferCleanupTimers();
@@ -1274,8 +1515,9 @@ const restoreEditorSnapshot = (
     demandMode: snapshot.demandMode,
     demandUnit: snapshot.demandUnit,
     capacityMode: snapshot.capacityMode,
-    sharedCapacityInputMode: snapshot.sharedCapacityInputMode,
-    sharedCapacityValue: snapshot.sharedCapacityValue,
+    sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+    sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+    resourcePools,
     demandTotalTicks: DEMAND_UNIT_TICKS[snapshot.demandUnit],
     simulationSeed: snapshot.simulationSeed,
     kpiTargets: cloneSerializable(snapshot.kpiTargets),
@@ -1333,6 +1575,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   capacityMode: 'local',
   sharedCapacityInputMode: DEFAULT_SHARED_CAPACITY_INPUT_MODE,
   sharedCapacityValue: DEFAULT_SHARED_CAPACITY_VALUE,
+  resourcePools: [createDefaultResourcePool()],
   demandTotalTicks: DEMAND_UNIT_TICKS.week,
   demandArrivalsGenerated: 0,
   demandArrivalsByNode: {},
@@ -1341,6 +1584,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   periodCompleted: 0,
   kpiHistoryByPeriod: createEmptyKpiHistory(),
   nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
+  poolUtilizationHistoryByPeriod: createEmptyPoolUtilizationHistory(),
 
   // Performance: Pre-computed derived state
   itemsByNode: new Map(),
@@ -1374,6 +1618,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   simulationSeed: DEFAULT_SIMULATION_SEED,
   kpiTargets: { ...DEFAULT_KPI_TARGETS },
   showSunMoonClock: readShowSunMoonClockPreference(),
+  showSharedResourcesCard: readSharedResourcesCardPreference(),
   readOnlyMode: false,
   runStartedAtMs: null,
   lastRunSummary: null,
@@ -1469,6 +1714,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         capacityMode: mode,
         sharedCapacityInputMode: state.sharedCapacityInputMode,
         sharedCapacityValue: state.sharedCapacityValue,
+        resourcePools: state.resourcePools,
       };
       resetSimulationRng(state.simulationSeed);
       return {
@@ -1484,14 +1730,21 @@ export const useStore = create<SimulationState>((set, get) => ({
     pushUndoSnapshot(get(), set);
     set((state) => {
       if (mode === state.sharedCapacityInputMode) return state;
+      const resourcePools = getNormalizedResourcePools(state.resourcePools, mode, state.sharedCapacityValue).map((pool) =>
+        pool.id === DEFAULT_RESOURCE_POOL_ID ? { ...pool, inputMode: mode } : pool,
+      );
+      const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
       const nextSettings = {
         capacityMode: state.capacityMode,
-        sharedCapacityInputMode: mode,
-        sharedCapacityValue: state.sharedCapacityValue,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        resourcePools,
       };
       resetSimulationRng(state.simulationSeed);
       return {
-        sharedCapacityInputMode: mode,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        resourcePools,
         ...buildRunStateReset(),
         nodes: resetRuntimeNodeState(state.nodes, state.edges, nextSettings),
       };
@@ -1504,16 +1757,154 @@ export const useStore = create<SimulationState>((set, get) => ({
     pushUndoSnapshot(get(), set);
     set((state) => {
       if (nextValue === state.sharedCapacityValue) return state;
+      const resourcePools = getNormalizedResourcePools(state.resourcePools, state.sharedCapacityInputMode, nextValue).map((pool) =>
+        pool.id === DEFAULT_RESOURCE_POOL_ID ? { ...pool, capacityValue: nextValue } : pool,
+      );
+      const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
       const nextSettings = {
         capacityMode: state.capacityMode,
-        sharedCapacityInputMode: state.sharedCapacityInputMode,
-        sharedCapacityValue: nextValue,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        resourcePools,
       };
       resetSimulationRng(state.simulationSeed);
       return {
-        sharedCapacityValue: nextValue,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        resourcePools,
         ...buildRunStateReset(),
         nodes: resetRuntimeNodeState(state.nodes, state.edges, nextSettings),
+      };
+    });
+    scheduleAutosave(get);
+  },
+  addResourcePool: () => {
+    if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const currentPools = getNormalizedResourcePools(
+        state.resourcePools,
+        state.sharedCapacityInputMode,
+        state.sharedCapacityValue,
+      );
+      const resourcePools: ResourcePool[] = [
+        ...currentPools,
+        {
+          id: `resource-pool-${generateId()}`,
+          name: `Pool ${currentPools.length}`,
+          inputMode: 'fte',
+          capacityValue: 1,
+          avatarId: getDefaultResourcePoolAvatarId(currentPools.length),
+          colorId: getDefaultResourcePoolColorId(currentPools.length),
+        },
+      ];
+      const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+      const nextNodes = applyValidationToNodes(
+        normalizeNodesForResourcePools(state.nodes, resourcePools),
+        state.edges,
+        {
+          capacityMode: state.capacityMode,
+          sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+          sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+          resourcePools,
+        },
+      );
+      return {
+        resourcePools,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        nodes: nextNodes,
+      };
+    });
+    scheduleAutosave(get);
+  },
+  updateResourcePool: (id: string, patch: Partial<ResourcePool>) => {
+    if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const currentPools = getNormalizedResourcePools(
+        state.resourcePools,
+        state.sharedCapacityInputMode,
+        state.sharedCapacityValue,
+      );
+      const resourcePools: ResourcePool[] = currentPools.map((pool): ResourcePool => {
+        if (pool.id !== id) return pool;
+        const nextInputMode: SharedCapacityInputMode =
+          patch.inputMode === 'hours' ? 'hours' : 'fte';
+        return {
+          ...pool,
+          ...(patch.name !== undefined ? { name: patch.name } : {}),
+          ...(patch.inputMode !== undefined ? { inputMode: nextInputMode } : {}),
+          ...(patch.capacityValue !== undefined
+            ? { capacityValue: Number.isFinite(patch.capacityValue) ? Math.max(0, Number(patch.capacityValue)) : pool.capacityValue }
+            : {}),
+          ...(patch.avatarId !== undefined
+            ? { avatarId: normalizeResourcePoolAvatarId(patch.avatarId, 0, pool.id === DEFAULT_RESOURCE_POOL_ID) }
+            : {}),
+          ...(patch.colorId !== undefined
+            ? { colorId: normalizeResourcePoolColorId(patch.colorId, 0, pool.id === DEFAULT_RESOURCE_POOL_ID) }
+            : {}),
+        };
+      });
+      const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+      const shouldReset = patch.inputMode !== undefined || patch.capacityValue !== undefined;
+      const normalizedNodes = normalizeNodesForResourcePools(state.nodes, resourcePools);
+      const nextSettings = {
+        capacityMode: state.capacityMode,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        resourcePools,
+      };
+
+      if (!shouldReset) {
+        return {
+          resourcePools,
+          sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+          sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+          nodes: applyValidationToNodes(normalizedNodes, state.edges, nextSettings),
+        };
+      }
+
+      resetSimulationRng(state.simulationSeed);
+      return {
+        resourcePools,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(normalizedNodes, state.edges, nextSettings),
+      };
+    });
+    scheduleAutosave(get);
+  },
+  deleteResourcePool: (id: string) => {
+    if (get().readOnlyMode) return;
+    if (!id || id === DEFAULT_RESOURCE_POOL_ID) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const currentPools = getNormalizedResourcePools(
+        state.resourcePools,
+        state.sharedCapacityInputMode,
+        state.sharedCapacityValue,
+      );
+      if (currentPools.length <= 1 || !currentPools.some((pool) => pool.id === id)) {
+        return state;
+      }
+      const resourcePools: ResourcePool[] = currentPools.filter((pool) => pool.id !== id);
+      const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+      const normalizedNodes = normalizeNodesForResourcePools(state.nodes, resourcePools);
+      const nextSettings = {
+        capacityMode: state.capacityMode,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        resourcePools,
+      };
+      resetSimulationRng(state.simulationSeed);
+      return {
+        resourcePools,
+        sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+        sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(normalizedNodes, state.edges, nextSettings),
       };
     });
     scheduleAutosave(get);
@@ -1594,6 +1985,11 @@ export const useStore = create<SimulationState>((set, get) => ({
   setShowSunMoonClock: (enabled: boolean) => {
     persistShowSunMoonClockPreference(Boolean(enabled));
     set({ showSunMoonClock: Boolean(enabled) });
+  },
+
+  setShowSharedResourcesCard: (enabled: boolean) => {
+    persistSharedResourcesCardPreference(Boolean(enabled));
+    set({ showSharedResourcesCard: Boolean(enabled) });
   },
 
   setReadOnlyMode: (enabled: boolean) => set({ readOnlyMode: Boolean(enabled) }),
@@ -1716,6 +2112,7 @@ export const useStore = create<SimulationState>((set, get) => ({
     if (get().readOnlyMode) return;
     pushUndoSnapshot(get(), set);
     const id = generateId();
+    const defaultResourcePoolId = getDefaultResourcePool(getSharedCapacitySettings(get())).id;
     const newNode: ProcessNode = {
       id,
       type: 'processNode',
@@ -1724,6 +2121,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         label: `Station ${get().nodes.filter(n => n.type === 'processNode').length + 1}`,
         processingTime: 10,
         resources: 1,
+        resourcePoolId: defaultResourcePoolId,
         batchSize: DEFAULT_NODE_BATCH_SIZE,
         flowMode: DEFAULT_NODE_FLOW_MODE,
         pullOpenSlotsRequired: DEFAULT_PULL_OPEN_SLOTS_REQUIRED,
@@ -1748,6 +2146,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       if (get().readOnlyMode) return;
       pushUndoSnapshot(get(), set);
       const id = generateId();
+      const defaultResourcePoolId = getDefaultResourcePool(getSharedCapacitySettings(get())).id;
       const newNode: StartNode = {
         id,
         type: 'startNode',
@@ -1756,6 +2155,7 @@ export const useStore = create<SimulationState>((set, get) => ({
           label: 'Start',
           processingTime: 2,
           resources: 1,
+          resourcePoolId: defaultResourcePoolId,
           batchSize: DEFAULT_NODE_BATCH_SIZE,
           flowMode: DEFAULT_NODE_FLOW_MODE,
           pullOpenSlotsRequired: DEFAULT_PULL_OPEN_SLOTS_REQUIRED,
@@ -2080,11 +2480,18 @@ export const useStore = create<SimulationState>((set, get) => ({
             const sharedCapacityValue = Number.isFinite(flow.sharedCapacityValue)
               ? Math.max(0, Number(flow.sharedCapacityValue))
               : DEFAULT_SHARED_CAPACITY_VALUE;
+            const resourcePools = getNormalizedResourcePools(
+              flow.resourcePools as ResourcePool[] | undefined,
+              sharedCapacityInputMode,
+              sharedCapacityValue,
+            );
+            const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
             const simulationSeed = normalizeSeed(flow.simulationSeed, get().simulationSeed);
             resetSimulationRng(simulationSeed);
+            const nextNodes = normalizeNodesForResourcePools(flow.nodes as AppNode[], resourcePools);
             set({
-                nodes: flow.nodes,
-                edges: normalizeFlowEdgeHandles(flow.nodes as AppNode[], flow.edges),
+                nodes: nextNodes,
+                edges: normalizeFlowEdgeHandles(nextNodes, flow.edges),
                 itemConfig: flow.itemConfig || get().itemConfig,
                 defaultHeaderColor: flow.defaultHeaderColor || get().defaultHeaderColor,
                 durationPreset,
@@ -2100,8 +2507,9 @@ export const useStore = create<SimulationState>((set, get) => ({
                 demandMode: (flow.demandMode as DemandMode) || 'auto',
                 demandUnit,
                 capacityMode,
-                sharedCapacityInputMode,
-                sharedCapacityValue,
+                sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+                sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+                resourcePools,
                 demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
                 simulationSeed,
                 kpiTargets: {
@@ -2129,17 +2537,43 @@ export const useStore = create<SimulationState>((set, get) => ({
           pushUndoSnapshot(get(), set);
           clearVisualTransferCleanupTimers();
           resetSimulationRng(get().simulationSeed);
-          const nodes = JSON.parse(JSON.stringify(scenario.nodes)) as AppNode[];
+          const capacityMode = scenario.capacityMode ?? get().capacityMode;
+          const sharedCapacityInputMode = scenario.sharedCapacityInputMode ?? get().sharedCapacityInputMode;
+          const sharedCapacityValue = Number.isFinite(scenario.sharedCapacityValue)
+            ? Math.max(0, Number(scenario.sharedCapacityValue))
+            : get().sharedCapacityValue;
+          const resourcePools = getNormalizedResourcePools(
+            scenario.resourcePools ?? get().resourcePools,
+            sharedCapacityInputMode,
+            sharedCapacityValue,
+          );
+          const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+          const nodes = normalizeNodesForResourcePools(
+            JSON.parse(JSON.stringify(scenario.nodes)) as AppNode[],
+            resourcePools,
+          );
           const edges = normalizeFlowEdgeHandles(
             nodes,
             JSON.parse(JSON.stringify(scenario.edges)) as Edge[]
           );
+          const nextNodes = resetRuntimeNodeState(nodes, edges, {
+            capacityMode,
+            sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+            sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+            resourcePools,
+          });
+          const demandMode = scenario.demandMode ?? 'auto';
+          const demandUnit = scenario.demandUnit ?? 'week';
           set({ 
-              nodes,
+              nodes: nextNodes,
               edges,
-              demandMode: 'auto',
-              demandUnit: 'week',
-              demandTotalTicks: DEMAND_UNIT_TICKS.week,
+              demandMode,
+              demandUnit,
+              demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
+              capacityMode,
+              sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+              sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+              resourcePools,
               currentCanvasId: null,
               currentCanvasName: SCENARIO_NAMES[scenarioKey] || 'Untitled Canvas',
               ...buildRunStateReset()
@@ -2172,6 +2606,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         if (!snapshot || !Array.isArray(snapshot.nodes) || !Array.isArray(snapshot.edges)) continue;
         const workspaceId = resolveSnapshotWorkspaceId(snapshot, entry?.id);
         if (!workspaceId) continue;
+        if (isAutosaveDraftSnapshot(snapshot, workspaceId)) continue;
         const updatedAt = parseCloudSaveUpdatedAt(entry);
         const existing = latestByWorkspace.get(workspaceId);
         if (!existing || updatedAt >= existing.updatedAt) {
@@ -2206,12 +2641,22 @@ export const useStore = create<SimulationState>((set, get) => ({
     clearAutosaveTimer();
     const sdk = getProcessBoxSdk();
     const state = get();
-    const workspaceId = ensureWorkspaceId(state.currentCanvasId);
+    const currentCanvasId = normalizeWorkspaceId(state.currentCanvasId);
+    const currentIsAutosaveDraft = isAutosaveDraftCanvasId(currentCanvasId);
+    const saveAsAutosaveDraft = Boolean(options.autosave) && (!currentCanvasId || currentIsAutosaveDraft);
+    const workspaceId = saveAsAutosaveDraft
+      ? AUTOSAVE_DRAFT_CANVAS_ID
+      : currentIsAutosaveDraft
+        ? createWorkspaceId()
+        : ensureWorkspaceId(currentCanvasId);
     const canvasName = normalizeCanvasName(state.currentCanvasName);
-    const flow = createFlowSnapshot(state, {
+    const flow = {
+      ...createFlowSnapshot(state, {
       workspaceId,
       canvasName,
-    });
+      }),
+      autosaveDraft: saveAsAutosaveDraft,
+    };
     const nextSavedAt = Date.now();
 
     if (!sdk?.isEmbedded) {
@@ -2224,6 +2669,9 @@ export const useStore = create<SimulationState>((set, get) => ({
           updatedAt: nextSavedAt,
           data: flow,
         });
+        if (!saveAsAutosaveDraft && currentIsAutosaveDraft) {
+          await deleteCanvas(AUTOSAVE_DRAFT_CANVAS_ID).catch(() => undefined);
+        }
         set({
           currentCanvasId: workspaceId,
           currentCanvasName: canvasName,
@@ -2458,6 +2906,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         capacityMode,
         sharedCapacityInputMode,
         sharedCapacityValue,
+        resourcePools,
         demandTotalTicks,
         demandArrivalsGenerated,
         demandArrivalsByNode,
@@ -2466,6 +2915,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         periodCompleted,
         kpiHistoryByPeriod,
         nodeUtilizationHistoryByNode,
+        poolUtilizationHistoryByPeriod,
         visualTransfers,
         runStartedAtMs,
         simulationSeed,
@@ -2498,6 +2948,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         capacityMode,
         sharedCapacityInputMode,
         sharedCapacityValue,
+        resourcePools,
       };
       const nodeCapacityProfiles = new Map<string, ReturnType<typeof getNodeCapacityProfile>>();
       for (const node of nodes) {
@@ -2629,6 +3080,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       let newlyCompleted = 0;
       let newlyCompletedInEpoch = 0;
       let nextKpiHistory = kpiHistoryByPeriod;
+      let nextPoolUtilizationHistory = poolUtilizationHistoryByPeriod;
 
       const registerCompletion = (item: ProcessItem) => {
         if (item.terminalNodeId === null) return;
@@ -2925,6 +3377,7 @@ export const useStore = create<SimulationState>((set, get) => ({
 
       let busyResourceTicksThisTick = 0;
       let availableResourceTicksThisTick = 0;
+      const poolResourceTicksThisTick = new Map<string, { busyResourceTicks: number; availableResourceTicks: number }>();
       const minNodeUtilizationTick = tickCount - NODE_UTILIZATION_ROLLING_WINDOW_TICKS + 1;
       const nextNodeUtilizationHistory: NodeUtilizationHistoryByNode = {};
       for (const node of nodes) {
@@ -2948,6 +3401,15 @@ export const useStore = create<SimulationState>((set, get) => ({
         const busyResourceTicks = Math.min(availableResourceTicks, processingCounts.get(node.id) || 0);
         availableResourceTicksThisTick += availableResourceTicks;
         busyResourceTicksThisTick += busyResourceTicks;
+        if (capacityMode === 'sharedAllocation' && capacityProfile?.usesSharedAllocation && capacityProfile.resourcePoolId) {
+          const currentPoolTicks = poolResourceTicksThisTick.get(capacityProfile.resourcePoolId) || {
+            busyResourceTicks: 0,
+            availableResourceTicks: 0,
+          };
+          currentPoolTicks.busyResourceTicks += busyResourceTicks;
+          currentPoolTicks.availableResourceTicks += availableResourceTicks;
+          poolResourceTicksThisTick.set(capacityProfile.resourcePoolId, currentPoolTicks);
+        }
         nextNodeUtilizationHistory[node.id] = [
           ...existingSamples,
           {
@@ -2963,6 +3425,15 @@ export const useStore = create<SimulationState>((set, get) => ({
           busyResourceTicks: busyResourceTicksThisTick,
           availableResourceTicks: availableResourceTicksThisTick,
         });
+        for (const [resourcePoolId, totals] of poolResourceTicksThisTick.entries()) {
+          nextPoolUtilizationHistory = upsertPoolUtilizationBucket(
+            nextPoolUtilizationHistory,
+            period,
+            resourcePoolId,
+            tickCount,
+            totals,
+          );
+        }
       }
 
       // Queue waiting is counted only for items that remain queued after assignment.
@@ -3124,6 +3595,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         demandOpenTicksByNode: nextDemandOpenTicksByNode,
         kpiHistoryByPeriod: nextKpiHistory,
         nodeUtilizationHistoryByNode: nextNodeUtilizationHistory,
+        poolUtilizationHistoryByPeriod: nextPoolUtilizationHistory,
         runStartedAtMs: effectiveRunStartedAtMs,
         lastRunSummary: nextLastRunSummary,
         lastLoggedRunKey: nextLastLoggedRunKey

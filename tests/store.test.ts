@@ -32,6 +32,7 @@ vi.mock('../processBoxSdk', () => ({
 import { useStore } from '../store';
 import { computeLeadMetrics, computeRollingNodeUtilization, NODE_UTILIZATION_ROLLING_WINDOW_TICKS } from '../metrics';
 import { nextMulberry32 } from '../rng';
+import { AUTOSAVE_DRAFT_CANVAS_ID } from '../canvas-storage';
 
 // Helper to reset store to a clean state before each test
 const resetStore = () => {
@@ -794,6 +795,75 @@ describe('Store - Tick Engine', () => {
     expect((node!.data as any).quality).toBe(0.85);
   });
 
+  it('assigns node allocation against its selected resource pool', () => {
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      resourcePools: [
+        { id: 'default-shared-pool', name: 'Shared Team', inputMode: 'fte', capacityValue: 1 },
+        { id: 'contractors', name: 'Contractors', inputMode: 'hours', capacityValue: 16 },
+      ],
+      sharedCapacityInputMode: 'fte',
+      sharedCapacityValue: 1,
+    });
+    useStore.getState().updateNodeData('proc-1', {
+      processingTime: 4,
+      resourcePoolId: 'contractors',
+      allocationPercent: 50,
+    });
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    const item = useStore.getState().items[0];
+    expect(item.status).toBe(ItemStatus.PROCESSING);
+    expect(item.remainingTime).toBe(3);
+    expect(item.timeActive).toBe(1);
+    expect(item.timeWaiting).toBe(0);
+  });
+
+  it('deleting a resource pool reassigns nodes back to the default pool', () => {
+    useStore.getState().addResourcePool();
+    const addedPoolId = useStore.getState().resourcePools.find((pool) => pool.id !== 'default-shared-pool')!.id;
+
+    useStore.getState().updateNodeData('proc-1', {
+      resourcePoolId: addedPoolId,
+      allocationPercent: 40,
+    });
+    useStore.getState().deleteResourcePool(addedPoolId);
+
+    const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
+    expect((node!.data as any).resourcePoolId).toBe('default-shared-pool');
+  });
+
+  it('updates the default pool capacity through the legacy shared-capacity fields', () => {
+    useStore.getState().updateResourcePool('default-shared-pool', {
+      inputMode: 'hours',
+      capacityValue: 20,
+    });
+
+    const state = useStore.getState();
+    const defaultPool = state.resourcePools.find((pool) => pool.id === 'default-shared-pool');
+
+    expect(state.sharedCapacityInputMode).toBe('hours');
+    expect(state.sharedCapacityValue).toBe(20);
+    expect(defaultPool?.inputMode).toBe('hours');
+    expect(defaultPool?.capacityValue).toBe(20);
+  });
+
+  it('updates pool colour independently from the selected avatar', () => {
+    useStore.getState().updateResourcePool('default-shared-pool', {
+      colorId: 'sky',
+    } as any);
+
+    const defaultPool = useStore
+      .getState()
+      .resourcePools.find((pool) => pool.id === 'default-shared-pool');
+
+    expect(defaultPool?.colorId).toBe('sky');
+    expect(defaultPool?.avatarId).toBe('orbit');
+  });
+
   it('item completes immediately when the next node is an instant end node', () => {
     useStore.getState().addItem('proc-1');
     // Tick enough times: 1 to start processing + 3 for processing
@@ -1228,6 +1298,37 @@ describe('Store - Seeded Simulation And Process Box Logging', () => {
     });
   });
 
+  it('autosaving an unsaved canvas uses one hidden draft workspace', async () => {
+    setupLinearFlow();
+    sdkMock.isEmbedded = true;
+    useStore.setState({
+      currentCanvasId: null,
+      currentCanvasName: 'Untitled Canvas',
+      resourcePools: [
+        {
+          id: 'default-shared-pool',
+          name: 'Shared Team',
+          inputMode: 'fte',
+          capacityValue: 3,
+          avatarId: 'orbit',
+        },
+      ],
+      sharedCapacityInputMode: 'fte',
+      sharedCapacityValue: 3,
+    } as any);
+
+    await useStore.getState().saveCanvasToDb({ autosave: true, silent: true });
+
+    expect(sdkMock.createCloudSave).toHaveBeenCalledTimes(1);
+    expect(sdkMock.createCloudSave.mock.calls[0][0]).toMatchObject({
+      state: expect.objectContaining({
+        workspaceId: AUTOSAVE_DRAFT_CANVAS_ID,
+        autosaveDraft: true,
+      }),
+    });
+    expect(useStore.getState().currentCanvasId).toBe(AUTOSAVE_DRAFT_CANVAS_ID);
+  });
+
   it('refreshCanvasList groups cloud save snapshots by workspace id', async () => {
     sdkMock.isEmbedded = true;
     sdkMock.listCloudSaves.mockResolvedValue({
@@ -1282,6 +1383,44 @@ describe('Store - Seeded Simulation And Process Box Logging', () => {
       name: 'Hospital ER',
       source: 'cloud',
       snapshotId: 'save-2',
+    });
+  });
+
+  it('refreshCanvasList hides autosave draft snapshots', async () => {
+    sdkMock.isEmbedded = true;
+    sdkMock.listCloudSaves.mockResolvedValue({
+      saves: [
+        {
+          id: 'save-draft',
+          updated_at: '2026-03-06T11:00:00.000Z',
+          state_json: {
+            workspaceId: AUTOSAVE_DRAFT_CANVAS_ID,
+            autosaveDraft: true,
+            canvasName: 'Working Draft',
+            nodes: [{ id: 'a' }],
+            edges: [],
+          },
+        },
+        {
+          id: 'save-1',
+          updated_at: '2026-03-06T10:00:00.000Z',
+          state_json: {
+            workspaceId: 'workspace-1',
+            canvasName: 'Coffee Service',
+            nodes: [{ id: 'a' }],
+            edges: [],
+          },
+        },
+      ],
+    });
+
+    await useStore.getState().refreshCanvasList();
+
+    const canvases = useStore.getState().savedCanvasList;
+    expect(canvases).toHaveLength(1);
+    expect(canvases[0]).toMatchObject({
+      id: 'workspace-1',
+      name: 'Coffee Service',
     });
   });
 
@@ -1352,6 +1491,42 @@ describe('Store - Seeded Simulation And Process Box Logging', () => {
     startHistory = useStore.getState().nodeUtilizationHistoryByNode['start-1'];
     expect(startHistory).toHaveLength(NODE_UTILIZATION_ROLLING_WINDOW_TICKS);
     expect(computeRollingNodeUtilization(startHistory)).toBe(0);
+  });
+
+  it('tracks latest period-average utilisation per shared resource pool', () => {
+    setupLinearFlow();
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      sharedCapacityInputMode: 'fte',
+      sharedCapacityValue: 1,
+      resourcePools: [
+        {
+          id: 'default-shared-pool',
+          name: 'Shared Team',
+          inputMode: 'fte',
+          capacityValue: 1,
+          avatarId: 'orbit',
+        },
+      ],
+      poolUtilizationHistoryByPeriod: {
+        hour: {},
+        day: {},
+        week: {},
+        month: {},
+      },
+    } as any);
+
+    useStore.getState().updateNodeData('start-1', { allocationPercent: 50 });
+    useStore.getState().updateNodeData('proc-1', { allocationPercent: 50 });
+    useStore.getState().addItem('start-1');
+    for (let i = 0; i < 10; i++) {
+      useStore.getState().tick();
+    }
+
+    const hourlyPoolBuckets = useStore.getState().poolUtilizationHistoryByPeriod.hour['default-shared-pool'];
+    expect(hourlyPoolBuckets).toHaveLength(1);
+    expect(hourlyPoolBuckets[0].resourceUtilizationAvg).toBeGreaterThan(0);
+    expect(hourlyPoolBuckets[0].availableResourceTicks).toBeGreaterThan(0);
   });
 });
 
@@ -1582,9 +1757,20 @@ describe('Store - Scenario Loading', () => {
   it('loadScenario("housingRepairs") loads the housing repairs scenario', () => {
     useStore.getState().loadScenario('housingRepairs');
     const state = useStore.getState();
+    const triageNode = state.nodes.find((node) => node.id === 'hr-triage');
+    const contractorVisitNode = state.nodes.find((node) => node.id === 'hr-contractor-visit');
     expect(state.currentCanvasName).toBe('Housing Repairs Process');
     expect(state.nodes.length).toBe(12); // 10 work/end + 2 annotations
     expect(state.edges.length).toBe(12);
+    expect(state.capacityMode).toBe('sharedAllocation');
+    expect(state.resourcePools.map((pool) => pool.name)).toEqual([
+      'Customer Service Center',
+      'Maintenance Coordinators',
+      'Direct Maintenance',
+      'Contractors',
+    ]);
+    expect((triageNode?.data as any).resourcePoolId).toBe('default-shared-pool');
+    expect((contractorVisitNode?.data as any).resourcePoolId).toBe('contractors');
   });
 
   it('loadScenario("complaints") loads the complaints scenario', () => {

@@ -76,6 +76,7 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
   const capacityMode = useStore((state) => state.capacityMode);
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
+  const resourcePools = useStore((state) => state.resourcePools);
 
   const vsmMetrics = useMemo(() => {
     return computeLeadMetrics(items, {
@@ -177,8 +178,9 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
         capacityMode,
         sharedCapacityInputMode,
         sharedCapacityValue,
+        resourcePools,
       }),
-    [capacityMode, itemsByNode, nodes, sharedCapacityInputMode, sharedCapacityValue],
+    [capacityMode, itemsByNode, nodes, resourcePools, sharedCapacityInputMode, sharedCapacityValue],
   );
   const periodAverageUtilization = useMemo(
     () => getLatestKpiUtilizationAverage(kpiHistoryByPeriod, demandUnit),

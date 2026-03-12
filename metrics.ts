@@ -5,6 +5,7 @@ import {
   KpiHistoryByPeriod,
   KpiPeriod,
   NodeUtilizationHistoryByNode,
+  PoolUtilizationHistoryByPeriod,
   ProcessItem,
   ProcessNodeData,
   ResourceUtilizationSample,
@@ -213,6 +214,16 @@ export const getLatestKpiUtilizationAverage = (
   period: KpiPeriod,
 ): number => {
   const buckets = historyByPeriod[period] || [];
+  const latestBucket = buckets[buckets.length - 1];
+  return latestBucket?.resourceUtilizationAvg || 0;
+};
+
+export const getLatestPoolUtilizationAverage = (
+  historyByPeriod: PoolUtilizationHistoryByPeriod,
+  period: KpiPeriod,
+  resourcePoolId: string,
+): number => {
+  const buckets = historyByPeriod[period]?.[resourcePoolId] || [];
   const latestBucket = buckets[buckets.length - 1];
   return latestBucket?.resourceUtilizationAvg || 0;
 };

@@ -1,11 +1,13 @@
 import React, { memo, useRef } from 'react';
-import { Handle, Position, NodeProps } from 'reactflow';
+import { Handle, Position, NodeProps, useStore as useReactFlowStore } from 'reactflow';
 import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../types';
 import { useStore } from '../store';
 import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2 } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
 import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
-import { computeNodeLiveUtilizationForLoad, getLocalCapacityUnits, getNodeCapacityProfile } from '../capacityModel';
+import { computeNodeLiveUtilizationForLoad, getLocalCapacityUnits, getNodeCapacityProfile, getResourcePools } from '../capacityModel';
+import { RESOURCE_POOL_COLOR_THEMES } from '../resourcePoolVisuals';
+import ResourcePoolAvatar from './ResourcePoolAvatar';
 
 const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   // Performance: Use pre-computed itemsByNode map (O(1) lookup instead of O(n) filter)
@@ -19,6 +21,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const capacityMode = useStore((state) => state.capacityMode);
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
+  const resourcePools = useStore((state) => state.resourcePools);
   const blockedInboundCount = useStore((state) => state.blockedCountsByTarget.get(id) || 0);
   const rollingUtilization = useStore((state) => getRollingNodeUtilization(state.nodeUtilizationHistoryByNode, id));
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
@@ -31,9 +34,26 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
         capacityMode,
         sharedCapacityInputMode,
         sharedCapacityValue,
+        resourcePools,
       })
     : null;
   const usesSharedAllocation = capacityProfile?.usesSharedAllocation ?? false;
+  const normalizedResourcePools = getResourcePools({
+    resourcePools,
+    sharedCapacityInputMode,
+    sharedCapacityValue,
+  });
+  const selectedResourcePool = usesSharedAllocation
+    ? normalizedResourcePools.find((pool) => pool.id === capacityProfile?.resourcePoolId) || normalizedResourcePools[0]
+    : null;
+  const selectedResourceTheme = selectedResourcePool
+    ? RESOURCE_POOL_COLOR_THEMES[selectedResourcePool.colorId!]
+    : null;
+  const activeTopHandleType = useReactFlowStore((state: any) => {
+    const activeHandle = state.connectionStartHandle || state.connectionClickStartHandle;
+    if (!activeHandle) return 'source';
+    return activeHandle.type === 'source' ? 'target' : 'source';
+  });
   const displayCapacity = Math.max(
     0,
     usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
@@ -168,6 +188,10 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const handleStyle = readOnlyMode
     ? { ...handleBaseStyle, opacity: 0, pointerEvents: 'none' as const }
     : { ...handleBaseStyle, ...handleVisibility };
+  const topHandleStyle = usesSharedAllocation ? { ...handleStyle, top: '-16px' } : handleStyle;
+  const disabledTopHandleStyle = { ...topHandleStyle, opacity: 0, pointerEvents: 'none' as const };
+  const topTargetHandleStyle = activeTopHandleType === 'target' ? topHandleStyle : disabledTopHandleStyle;
+  const topSourceHandleStyle = activeTopHandleType === 'source' ? topHandleStyle : disabledTopHandleStyle;
 
   const handleDelete = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -176,8 +200,29 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
 
   return (
     <div
-      className={`group w-72 bg-white rounded-xl border-2 transition-all duration-300 relative shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${bgOverlay}`}
+      className={`group relative w-72 overflow-visible bg-white rounded-xl border-2 transition-all duration-300 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.15)] ${borderColor} ${selected ? `ring-4 ${ringColor}` : ''} ${bgOverlay}`}
     >
+      {usesSharedAllocation && selectedResourcePool && selectedResourceTheme ? (
+        <div
+          className="absolute left-3 -top-[30px] z-40 flex max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-t-xl border-2 border-b-0 border-slate-900 px-2 py-1"
+          style={{ backgroundColor: selectedResourceTheme.tab || selectedResourceTheme.panel }}
+          title={`${selectedResourcePool.name} · ${(capacityProfile?.allocatedHoursPerDay ?? 0).toFixed(1)}h/day shared`}
+        >
+          <ResourcePoolAvatar
+            avatarId={selectedResourcePool.avatarId!}
+            colorId={selectedResourcePool.colorId}
+            size={22}
+            className="shrink-0"
+          />
+          <div className="truncate text-[10px] font-black uppercase tracking-[0.06em] text-slate-900">
+            {selectedResourcePool.name}
+          </div>
+          <div className="shrink-0 text-[9px] font-bold text-slate-600">
+            {(capacityProfile?.allocatedHoursPerDay ?? 0).toFixed(1)}h/d
+          </div>
+        </div>
+      ) : null}
+
       {/* Validation Warning Badge */}
       {data.validationError && (
           <div className="absolute -top-3 -right-2 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-md z-50 animate-bounce flex items-center gap-1">
@@ -204,8 +249,8 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       <Handle type="source" position={Position.Left} id="left-source" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
 
       {/* Top */}
-      <Handle type="target" position={Position.Top} id="top-target" className={handleClassName} style={handleStyle} />
-      <Handle type="source" position={Position.Top} id="top-source" className={handleClassName} style={handleStyle} />
+      <Handle type="target" position={Position.Top} id="top-target" className={handleClassName} style={topTargetHandleStyle} />
+      <Handle type="source" position={Position.Top} id="top-source" className={handleClassName} style={topSourceHandleStyle} />
 
       {/* Right */}
       <Handle type="target" position={Position.Right} id="right-target" className={handleClassName} style={{ ...handleStyle, ...horizontalHandlePosition }} />
@@ -265,13 +310,8 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                           <span className="tabular-nums">{rollingUtilization.toFixed(0)}%</span>
                         </span>
                     </div>
-                    {(usesSharedAllocation || batchingEnabled || flowMode === 'pull' || blockedInboundCount > 0) && (
+                    {(batchingEnabled || flowMode === 'pull' || blockedInboundCount > 0) && (
                       <div className="flex gap-2 mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                        {usesSharedAllocation && (
-                          <span className="rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-blue-700">
-                            {capacityProfile?.allocatedHoursPerDay.toFixed(1)}h/day
-                          </span>
-                        )}
                         {batchingEnabled && flowMode !== 'pull' && !usesSharedAllocation && (
                           <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-slate-600">
                             Batch {batchSize}

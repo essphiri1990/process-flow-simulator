@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ItemStatus } from '../types';
-import { computeOverallLiveUtilization, getNodeCapacityProfile, getSharedAllocationTotals } from '../capacityModel';
+import { computeOverallLiveUtilization, getNodeCapacityProfile, getResourcePools, getSharedAllocationTotals } from '../capacityModel';
 
 describe('capacityModel', () => {
   it('reports signed remaining budget when total allocation exceeds 100%', () => {
@@ -183,5 +183,130 @@ describe('capacityModel', () => {
     expect(profile.availableCapacityPerTick).toBe(0);
     expect(profile.maxConcurrentItems).toBe(0);
     expect(profile.equivalentResources).toBe(0);
+  });
+
+  it('computes allocation totals per selected resource pool', () => {
+    const nodes = [
+      {
+        id: 'start-1',
+        type: 'startNode',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Start',
+          processingTime: 1,
+          resources: 1,
+          allocationPercent: 60,
+          resourcePoolId: 'default-shared-pool',
+          quality: 1,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+      {
+        id: 'proc-1',
+        type: 'processNode',
+        position: { x: 200, y: 0 },
+        data: {
+          label: 'Contractor Visit',
+          processingTime: 1,
+          resources: 1,
+          allocationPercent: 55,
+          resourcePoolId: 'contractors',
+          quality: 1,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+    ] as any;
+
+    const totals = getSharedAllocationTotals(
+      nodes,
+      {
+        capacityMode: 'sharedAllocation',
+        sharedCapacityInputMode: 'fte',
+        sharedCapacityValue: 3,
+        resourcePools: [
+          { id: 'default-shared-pool', name: 'Shared Team', inputMode: 'fte', capacityValue: 3 },
+          { id: 'contractors', name: 'Contractors', inputMode: 'hours', capacityValue: 16 },
+        ],
+      },
+      'contractors',
+    );
+
+    expect(totals.resourcePoolName).toBe('Contractors');
+    expect(totals.workNodeCount).toBe(1);
+    expect(totals.totalAllocatedPercent).toBe(55);
+    expect(totals.remainingPercent).toBe(45);
+    expect(totals.totalSharedHoursPerDay).toBe(16);
+    expect(totals.allocatedHoursPerDay).toBeCloseTo(8.8);
+  });
+
+  it('normalizes pool colors for older flows that only saved avatars', () => {
+    const pools = getResourcePools({
+      sharedCapacityInputMode: 'fte',
+      sharedCapacityValue: 3,
+      resourcePools: [
+        {
+          id: 'default-shared-pool',
+          name: 'Shared Team',
+          inputMode: 'fte',
+          capacityValue: 3,
+          avatarId: 'orbit',
+        },
+        {
+          id: 'contractors',
+          name: 'Contractors',
+          inputMode: 'hours',
+          capacityValue: 16,
+          avatarId: 'bot',
+        },
+      ] as any,
+    });
+
+    expect(pools[0].colorId).toBe('amber');
+    expect(pools[1].colorId).toBe('orange');
+  });
+
+  it('uses the assigned pool budget when building a node capacity profile', () => {
+    const nodes = [
+      {
+        id: 'proc-1',
+        type: 'processNode',
+        position: { x: 200, y: 0 },
+        data: {
+          label: 'Contractor Visit',
+          processingTime: 1,
+          resources: 1,
+          allocationPercent: 50,
+          resourcePoolId: 'contractors',
+          quality: 1,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+    ] as any;
+
+    const profile = getNodeCapacityProfile(
+      nodes[0],
+      nodes,
+      {
+        capacityMode: 'sharedAllocation',
+        sharedCapacityInputMode: 'fte',
+        sharedCapacityValue: 3,
+        resourcePools: [
+          { id: 'default-shared-pool', name: 'Shared Team', inputMode: 'fte', capacityValue: 3 },
+          { id: 'contractors', name: 'Contractors', inputMode: 'hours', capacityValue: 16 },
+        ],
+      },
+    );
+
+    expect(profile.resourcePoolId).toBe('contractors');
+    expect(profile.resourcePoolName).toBe('Contractors');
+    expect(profile.totalSharedHoursPerDay).toBe(16);
+    expect(profile.allocatedHoursPerDay).toBe(8);
+    expect(profile.equivalentResources).toBe(1);
   });
 });

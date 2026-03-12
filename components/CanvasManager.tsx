@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import ConfirmDialog from './ConfirmDialog';
+import { isAutosaveDraftCanvasId } from '../canvas-storage';
 import {
   ChevronDown,
   Save,
@@ -24,6 +25,7 @@ const CanvasManager: React.FC = () => {
     deleteCanvasFromDb,
     refreshCanvasList,
   } = useStore();
+  const currentCanvasIsSaved = Boolean(currentCanvasId) && !isAutosaveDraftCanvasId(currentCanvasId);
 
   const [isOpen, setIsOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -99,7 +101,7 @@ const CanvasManager: React.FC = () => {
   };
 
   const handleSave = async () => {
-    if (!currentCanvasId) {
+    if (!currentCanvasIsSaved) {
       // First save — prompt for name
       setIsSaveAsMode(true);
       setSaveAsName(currentCanvasName === 'Untitled Canvas' ? '' : currentCanvasName);
@@ -215,7 +217,7 @@ const CanvasManager: React.FC = () => {
             <span className="text-xs font-medium text-slate-600 max-w-[160px] truncate">
               {currentCanvasName}
             </span>
-            {currentCanvasId && (
+            {currentCanvasIsSaved && (
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Saved" />
             )}
             <ChevronDown size={12} className="text-slate-400" />
@@ -233,7 +235,7 @@ const CanvasManager: React.FC = () => {
               >
                 <Save size={14} className="text-blue-500" />
                 Save
-                {!currentCanvasId && <span className="text-slate-400 ml-auto">New</span>}
+                {!currentCanvasIsSaved && <span className="text-slate-400 ml-auto">New</span>}
               </button>
               <button
                 onClick={() => {

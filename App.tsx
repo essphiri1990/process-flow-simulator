@@ -27,6 +27,7 @@ import SunMoonCycle from './components/SunMoonCycle';
 import Onboarding from './components/Onboarding';
 import ErrorBoundary from './components/ErrorBoundary';
 import DebugOverlay from './components/DebugOverlay';
+import SharedResourcesCard from './components/SharedResourcesCard';
 import { computeLeadMetrics } from './metrics';
 import { getProcessBoxSdk } from './processBoxSdk';
 import { shouldRenderProcessFlowSessionPanel } from './sessionSupport';
@@ -888,6 +889,8 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
         onEditNode={() => setIsConfigOpen(true)}
         onOpenAnalytics={() => setIsAnalyticsOpen(true)}
       />
+
+      <SharedResourcesCard hasConfigPanel={isConfigOpen && Boolean(selectedNodeId)} />
 
 
       {isConfigOpen && selectedNodeId && (
