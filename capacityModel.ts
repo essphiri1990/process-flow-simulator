@@ -5,6 +5,7 @@ import {
   ProcessItem,
   ProcessNodeData,
   ResourcePool,
+  SharedNodeBudgetStateByNode,
   SharedCapacityInputMode,
   TICKS_PER_WORKDAY,
 } from './types';
@@ -32,6 +33,7 @@ export interface NodeCapacityProfile {
   resourcePoolName: string | null;
   totalSharedHoursPerDay: number;
   allocatedHoursPerDay: number;
+  dailyBudgetMinutes: number;
   equivalentResources: number;
   availableCapacityPerTick: number;
   maxConcurrentItems: number;
@@ -47,6 +49,12 @@ export interface SharedAllocationTotals {
   allocatedHoursPerDay: number;
   remainingHoursPerDay: number;
   isOverAllocated: boolean;
+}
+
+export interface SharedBudgetSummary {
+  dailyBudgetMinutes: number;
+  remainingBudgetMinutes: number;
+  consumedBudgetMinutes: number;
 }
 
 type WorkNode = AppNode & {
@@ -250,6 +258,7 @@ export const getNodeCapacityProfile = (
       resourcePoolName: null,
       totalSharedHoursPerDay: 0,
       allocatedHoursPerDay: 0,
+      dailyBudgetMinutes: 0,
       equivalentResources: 0,
       availableCapacityPerTick: 0,
       maxConcurrentItems: 0,
@@ -271,6 +280,7 @@ export const getNodeCapacityProfile = (
       resourcePoolName: null,
       totalSharedHoursPerDay: 0,
       allocatedHoursPerDay: 0,
+      dailyBudgetMinutes: 0,
       equivalentResources: resources,
       availableCapacityPerTick: resources,
       maxConcurrentItems: resources,
@@ -281,12 +291,12 @@ export const getNodeCapacityProfile = (
   const totalSharedHoursPerDay = getResourcePoolHoursPerDay(pool);
   const allocationPercent = getNodeAllocationPercent(node.id, nodes, settings);
   const allocatedHoursPerDay = totalSharedHoursPerDay * (allocationPercent / 100);
+  const dailyBudgetMinutes = allocatedHoursPerDay * 60;
   const openTicksPerDay = computeOpenTicksForPeriod(TICKS_PER_WORKDAY, processData.workingHours);
   const availableCapacityPerTick =
-    openTicksPerDay > 0 ? (allocatedHoursPerDay * 60) / openTicksPerDay : 0;
+    openTicksPerDay > 0 ? dailyBudgetMinutes / openTicksPerDay : 0;
   const equivalentResources = allocatedHoursPerDay / WORKDAY_HOURS;
-  const maxConcurrentItems =
-    availableCapacityPerTick > 0 ? Math.max(1, Math.ceil(availableCapacityPerTick)) : 0;
+  const maxConcurrentItems = resources;
 
   return {
     capacityMode: settings.capacityMode,
@@ -296,10 +306,108 @@ export const getNodeCapacityProfile = (
     resourcePoolName: pool.name,
     totalSharedHoursPerDay,
     allocatedHoursPerDay,
+    dailyBudgetMinutes,
     equivalentResources,
     availableCapacityPerTick,
     maxConcurrentItems,
   };
+};
+
+export const getMaxPossibleProcessingTime = (
+  processingTime: number,
+  variability = 0,
+): number => {
+  const safeProcessingTime = Number.isFinite(processingTime) ? Math.max(0, Math.round(processingTime)) : 0;
+  if (safeProcessingTime <= 0) return 0;
+  const safeVariability = Number.isFinite(variability) ? Math.max(0, variability) : 0;
+  if (safeVariability <= 0) return safeProcessingTime;
+  return Math.max(1, Math.round(safeProcessingTime + safeProcessingTime * safeVariability));
+};
+
+export const getNodeSharedBudgetSummary = (
+  nodeId: string,
+  profile: NodeCapacityProfile | null | undefined,
+  sharedNodeBudgetStateByNode: SharedNodeBudgetStateByNode | undefined,
+): SharedBudgetSummary => {
+  const dailyBudgetMinutes = Math.max(0, profile?.usesSharedAllocation ? profile.dailyBudgetMinutes : 0);
+  const saved = sharedNodeBudgetStateByNode?.[nodeId];
+  if (!saved) {
+    return {
+      dailyBudgetMinutes,
+      remainingBudgetMinutes: dailyBudgetMinutes,
+      consumedBudgetMinutes: 0,
+    };
+  }
+
+  return {
+    dailyBudgetMinutes,
+    remainingBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, saved.remainingBudgetMinutes)),
+    consumedBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, saved.consumedBudgetMinutes)),
+  };
+};
+
+export const getPoolSharedBudgetSummary = (
+  nodes: AppNode[],
+  settings: SharedCapacitySettings,
+  sharedNodeBudgetStateByNode: SharedNodeBudgetStateByNode | undefined,
+  resourcePoolId?: string,
+): SharedBudgetSummary => {
+  const targetPool = getResourcePoolById(settings, resourcePoolId);
+  let dailyBudgetMinutes = 0;
+  let remainingBudgetMinutes = 0;
+  let consumedBudgetMinutes = 0;
+
+  for (const node of getWorkNodes(nodes, settings, targetPool.id)) {
+    const profile = getNodeCapacityProfile(node, nodes, settings);
+    const summary = getNodeSharedBudgetSummary(node.id, profile, sharedNodeBudgetStateByNode);
+    dailyBudgetMinutes += summary.dailyBudgetMinutes;
+    remainingBudgetMinutes += summary.remainingBudgetMinutes;
+    consumedBudgetMinutes += summary.consumedBudgetMinutes;
+  }
+
+  return {
+    dailyBudgetMinutes,
+    remainingBudgetMinutes,
+    consumedBudgetMinutes,
+  };
+};
+
+export const computeBudgetUtilization = (
+  consumedBudgetMinutes: number,
+  availableBudgetMinutes: number,
+): number => {
+  if (!Number.isFinite(availableBudgetMinutes) || availableBudgetMinutes <= 0) return 0;
+  if (!Number.isFinite(consumedBudgetMinutes) || consumedBudgetMinutes <= 0) return 0;
+  return Math.min(100, (consumedBudgetMinutes / availableBudgetMinutes) * 100);
+};
+
+export const computeOverallBudgetUtilization = (
+  nodes: AppNode[],
+  settings: SharedCapacitySettings,
+  sharedNodeBudgetStateByNode: SharedNodeBudgetStateByNode | undefined,
+): number => {
+  let totalConsumedBudgetMinutes = 0;
+  let totalDailyBudgetMinutes = 0;
+
+  for (const node of getWorkNodes(nodes)) {
+    const profile = getNodeCapacityProfile(node, nodes, settings);
+    if (!profile.usesSharedAllocation) continue;
+    const summary = getNodeSharedBudgetSummary(node.id, profile, sharedNodeBudgetStateByNode);
+    totalConsumedBudgetMinutes += summary.consumedBudgetMinutes;
+    totalDailyBudgetMinutes += summary.dailyBudgetMinutes;
+  }
+
+  return computeBudgetUtilization(totalConsumedBudgetMinutes, totalDailyBudgetMinutes);
+};
+
+export const getEstimatedItemsPerDay = (
+  profile: NodeCapacityProfile | null | undefined,
+  processingTime: number,
+): number => {
+  if (!profile?.usesSharedAllocation) return 0;
+  const safeProcessingTime = Number.isFinite(processingTime) ? Math.max(0, processingTime) : 0;
+  if (safeProcessingTime <= 0) return 0;
+  return profile.dailyBudgetMinutes / safeProcessingTime;
 };
 
 export const computeOverallLiveUtilization = (
@@ -323,7 +431,7 @@ export const computeOverallLiveUtilization = (
   }
 
   if (totalCapacity <= 0) return 0;
-  return (totalBusy / totalCapacity) * 100;
+  return Math.min(100, (totalBusy / totalCapacity) * 100);
 };
 
 export const computeNodeLiveUtilizationForLoad = (
@@ -331,5 +439,5 @@ export const computeNodeLiveUtilizationForLoad = (
   profile: NodeCapacityProfile,
 ): number => {
   if (profile.availableCapacityPerTick <= 0) return 0;
-  return (Math.min(processingCount, profile.availableCapacityPerTick) / profile.availableCapacityPerTick) * 100;
+  return Math.min(100, (Math.min(processingCount, profile.availableCapacityPerTick) / profile.availableCapacityPerTick) * 100);
 };

@@ -439,6 +439,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
               {capacityMode === 'sharedAllocation' ? (
                 <div className="space-y-4">
+                  <div className="rounded-xl border-2 border-slate-900 bg-white px-3 py-2 text-[10px] font-medium text-slate-600">
+                    Shared allocation keeps processing time as real step time. Pool allocations create a daily budget for each node, and nodes use their own resource count as the active-item cap.
+                  </div>
                   {/* Add pool button */}
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-bold text-slate-500">Resource Pools</div>

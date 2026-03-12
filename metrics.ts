@@ -155,7 +155,7 @@ export const computeUtilizationFromResourceTicks = (
 ): number => {
   if (!Number.isFinite(availableResourceTicks) || availableResourceTicks <= 0) return 0;
   if (!Number.isFinite(busyResourceTicks) || busyResourceTicks <= 0) return 0;
-  return (busyResourceTicks / availableResourceTicks) * 100;
+  return Math.min(100, (busyResourceTicks / availableResourceTicks) * 100);
 };
 
 export const computeNodeUtilization = (items: ProcessItem[], resources: number): number => {

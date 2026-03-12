@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ItemStatus } from '../types';
-import { computeOverallLiveUtilization, getNodeCapacityProfile, getResourcePools, getSharedAllocationTotals } from '../capacityModel';
+import { computeOverallBudgetUtilization, computeOverallLiveUtilization, getNodeCapacityProfile, getResourcePools, getSharedAllocationTotals } from '../capacityModel';
 
 describe('capacityModel', () => {
   it('reports signed remaining budget when total allocation exceeds 100%', () => {
@@ -307,6 +307,47 @@ describe('capacityModel', () => {
     expect(profile.resourcePoolName).toBe('Contractors');
     expect(profile.totalSharedHoursPerDay).toBe(16);
     expect(profile.allocatedHoursPerDay).toBe(8);
+    expect(profile.dailyBudgetMinutes).toBe(480);
     expect(profile.equivalentResources).toBe(1);
+    expect(profile.maxConcurrentItems).toBe(1);
+  });
+
+  it('computes shared live utilization from today budget consumption', () => {
+    const nodes = [
+      {
+        id: 'proc-1',
+        type: 'processNode',
+        position: { x: 200, y: 0 },
+        data: {
+          label: 'Contractor Visit',
+          processingTime: 60,
+          resources: 2,
+          allocationPercent: 50,
+          quality: 1,
+          variability: 0,
+          stats: { processed: 0, failed: 0, maxQueue: 0 },
+          routingWeights: {},
+        },
+      },
+    ] as any;
+
+    const utilization = computeOverallBudgetUtilization(
+      nodes,
+      {
+        capacityMode: 'sharedAllocation',
+        sharedCapacityInputMode: 'hours',
+        sharedCapacityValue: 8,
+      },
+      {
+        'proc-1': {
+          budgetDayKey: 0,
+          dailyBudgetMinutes: 240,
+          remainingBudgetMinutes: 60,
+          consumedBudgetMinutes: 180,
+        },
+      },
+    );
+
+    expect(utilization).toBe(75);
   });
 });

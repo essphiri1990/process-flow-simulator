@@ -8,7 +8,7 @@ import {
   formatCompletionWindowLabel,
   getLatestKpiUtilizationAverage,
 } from '../metrics';
-import { computeOverallLiveUtilization } from '../capacityModel';
+import { computeOverallBudgetUtilization, computeOverallLiveUtilization } from '../capacityModel';
 
 interface ControlsProps {
   selectedNodeId: string | null;
@@ -77,6 +77,7 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
   const resourcePools = useStore((state) => state.resourcePools);
+  const sharedNodeBudgetStateByNode = useStore((state) => state.sharedNodeBudgetStateByNode);
 
   const vsmMetrics = useMemo(() => {
     return computeLeadMetrics(items, {
@@ -174,13 +175,32 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
   const activeCount = itemCounts.wip;
   const overallUtilization = useMemo(
     () =>
-      computeOverallLiveUtilization(nodes, itemsByNode, {
-        capacityMode,
-        sharedCapacityInputMode,
-        sharedCapacityValue,
-        resourcePools,
-      }),
-    [capacityMode, itemsByNode, nodes, resourcePools, sharedCapacityInputMode, sharedCapacityValue],
+      capacityMode === 'sharedAllocation'
+        ? computeOverallBudgetUtilization(
+            nodes,
+            {
+              capacityMode,
+              sharedCapacityInputMode,
+              sharedCapacityValue,
+              resourcePools,
+            },
+            sharedNodeBudgetStateByNode,
+          )
+        : computeOverallLiveUtilization(nodes, itemsByNode, {
+            capacityMode,
+            sharedCapacityInputMode,
+            sharedCapacityValue,
+            resourcePools,
+          }),
+    [
+      capacityMode,
+      itemsByNode,
+      nodes,
+      resourcePools,
+      sharedCapacityInputMode,
+      sharedCapacityValue,
+      sharedNodeBudgetStateByNode,
+    ],
   );
   const periodAverageUtilization = useMemo(
     () => getLatestKpiUtilizationAverage(kpiHistoryByPeriod, demandUnit),
@@ -340,7 +360,11 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
            <span className="text-[9px] text-teal-500 uppercase font-semibold tracking-wide leading-none mb-1">Util</span>
            <span
              className="font-mono font-bold text-xs leading-none text-slate-800"
-             title={`Latest ${demandUnit} average resource utilisation across start and process nodes. Live now: ${overallUtilization.toFixed(0)}%.`}
+             title={
+               capacityMode === 'sharedAllocation'
+                 ? `Latest ${demandUnit} average resource utilisation across start and process nodes. Today budget used: ${overallUtilization.toFixed(0)}%.`
+                 : `Latest ${demandUnit} average resource utilisation across start and process nodes. Live now: ${overallUtilization.toFixed(0)}%.`
+             }
            >
              {periodAverageUtilization.toFixed(0)}%
            </span>

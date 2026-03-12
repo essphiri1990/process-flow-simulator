@@ -9,7 +9,15 @@ import {
   DEFAULT_WORKING_HOURS,
   WorkingHoursConfig,
 } from '../types';
-import { clampAllocationPercent, getLocalCapacityUnits, getNodeCapacityProfile, getResourcePools, getSharedAllocationTotals } from '../capacityModel';
+import {
+  clampAllocationPercent,
+  getEstimatedItemsPerDay,
+  getLocalCapacityUnits,
+  getNodeCapacityProfile,
+  getNodeSharedBudgetSummary,
+  getResourcePools,
+  getSharedAllocationTotals,
+} from '../capacityModel';
 import ConfirmDialog from './ConfirmDialog';
 
 interface ConfigPanelProps {
@@ -83,6 +91,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
   const resourcePools = useStore((state) => state.resourcePools);
+  const sharedNodeBudgetStateByNode = useStore((state) => state.sharedNodeBudgetStateByNode);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -120,7 +129,15 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   const isSharedAllocationNode = capacityProfile.usesSharedAllocation && (isStartNode || isStandardNode);
   const derivedCapacityLimit = Math.max(
     0,
-    capacityProfile.usesSharedAllocation ? capacityProfile.maxConcurrentItems : getLocalCapacityUnits(data.resources || 0),
+    getLocalCapacityUnits(data.resources || 0),
+  );
+  const sharedBudgetSummary = useMemo(
+    () => getNodeSharedBudgetSummary(node.id, capacityProfile, sharedNodeBudgetStateByNode),
+    [capacityProfile, node.id, sharedNodeBudgetStateByNode],
+  );
+  const estimatedItemsPerDay = useMemo(
+    () => getEstimatedItemsPerDay(capacityProfile, data.processingTime),
+    [capacityProfile, data.processingTime],
   );
   const allocationUsesEqualSplit = allocationTotals.totalAllocatedPercent <= 0 && allocationTotals.workNodeCount > 0;
   const effectiveAllocatedPercent = allocationUsesEqualSplit ? 100 : allocationTotals.totalAllocatedPercent;
@@ -357,20 +374,23 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
         )}
 
         {/* Resources (local mode) */}
-        {!isEndNode && !isSharedAllocationNode && (
+        {!isEndNode && (
           <div>
             <div className="flex justify-between items-center mb-2">
-              <SectionLabel>Capacity (Resources)</SectionLabel>
+              <SectionLabel>{isSharedAllocationNode ? 'Concurrent Capacity' : 'Capacity (Resources)'}</SectionLabel>
               <span className="text-[10px] font-bold text-slate-400 font-mono">{data.resources}</span>
             </div>
             <input
               type="number"
-              min="1"
+              min="0"
               step="1"
               className={inputClass}
               value={data.resources}
-              onChange={(e) => handleChange('resources', Math.max(1, parseInt(e.target.value || '1', 10)))}
+              onChange={(e) => handleChange('resources', Math.max(0, parseInt(e.target.value || '0', 10)))}
             />
+            {isSharedAllocationNode && (
+              <p className="mt-1 text-[10px] text-slate-500">Sets how many items can be active at the same time. Allocation sets the daily budget.</p>
+            )}
           </div>
         )}
 
@@ -381,6 +401,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
               <Zap size={12} className="text-blue-500" />
               <span className="text-[10px] font-black uppercase tracking-[0.1em] text-slate-700">Shared Allocation</span>
             </div>
+            <p className="text-[10px] text-slate-500">
+              Processing time stays true elapsed time. Allocation reserves daily budget and limits how many items can start each day.
+            </p>
 
             {/* Pool selector */}
             <div>
@@ -424,7 +447,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
             {/* Condensed stats */}
             <div className="grid grid-cols-4 gap-1.5">
               <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
-                <div className="text-[8px] font-bold uppercase text-slate-400">Budget</div>
+                <div className="text-[8px] font-bold uppercase text-slate-400">Pool</div>
                 <div className="text-[11px] font-black text-slate-700 font-mono">{allocationTotals.totalSharedHoursPerDay.toFixed(1)}h</div>
               </div>
               <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
@@ -444,10 +467,20 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
             </div>
 
             {/* Node-level stats */}
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-4 gap-1.5">
               <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
-                <div className="text-[8px] font-bold uppercase text-slate-400">This Node</div>
+                <div className="text-[8px] font-bold uppercase text-slate-400">Node</div>
                 <div className="text-[11px] font-black text-slate-700 font-mono">{capacityProfile.allocatedHoursPerDay.toFixed(1)}h/d</div>
+              </div>
+              <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
+                <div className="text-[8px] font-bold uppercase text-slate-400">Left</div>
+                <div className="text-[11px] font-black text-slate-700 font-mono">{(sharedBudgetSummary.remainingBudgetMinutes / 60).toFixed(1)}h</div>
+              </div>
+              <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
+                <div className="text-[8px] font-bold uppercase text-slate-400">Items/Day</div>
+                <div className="text-[11px] font-black text-slate-700 font-mono">
+                  {data.processingTime > 0 ? estimatedItemsPerDay.toFixed(1) : 'Instant'}
+                </div>
               </div>
               <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
                 <div className="text-[8px] font-bold uppercase text-slate-400">FTE Eq.</div>

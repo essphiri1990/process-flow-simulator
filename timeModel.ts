@@ -66,6 +66,19 @@ export const computeOpenTicksForPeriod = (totalTicks: number, config?: WorkingHo
   return Math.min(openTicks, safeTotal);
 };
 
+export const getWorkingDayBudgetKey = (tickCount: number, config?: WorkingHoursConfig): number => {
+  const safeTick = Math.max(0, Math.floor(tickCount));
+  const dayIndex = Math.floor(safeTick / TICKS_PER_WORKDAY);
+  if (!config || !config.enabled) return dayIndex;
+
+  const working = normalizeWorkingHours(config);
+  if (working.daysPerWeek <= 0) return dayIndex;
+
+  const weekIndex = Math.floor(dayIndex / 5);
+  const dayIndexInWeek = dayIndex % 5;
+  return weekIndex * working.daysPerWeek + Math.min(dayIndexInWeek, Math.max(working.daysPerWeek - 1, 0));
+};
+
 // Convenience exports for consumers that need the unit constants in one place.
 export {
   TICKS_PER_MINUTE,

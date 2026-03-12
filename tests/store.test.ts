@@ -754,34 +754,40 @@ describe('Store - Tick Engine', () => {
     expect(item.remainingTime).toBe(2);
   });
 
-  it('shared allocation mode advances processing fractionally based on allocated capacity', () => {
+  it('shared allocation mode uses daily budget to gate starts instead of stretching processing time', () => {
     useStore.setState({
       capacityMode: 'sharedAllocation',
-      sharedCapacityInputMode: 'fte',
+      sharedCapacityInputMode: 'hours',
       sharedCapacityValue: 1,
     });
     useStore.getState().updateNodeData('proc-1', {
-      processingTime: 4,
-      allocationPercent: 50,
+      processingTime: 10,
+      resources: 1,
+      allocationPercent: 100,
     });
 
-    useStore.getState().addItem('proc-1');
-    useStore.getState().tick(); // queued -> processing
-    useStore.getState().tick(); // first half-tick of effective work
-
-    let item = useStore.getState().items[0];
-    expect(item.status).toBe(ItemStatus.PROCESSING);
-    expect(item.remainingTime).toBe(3.5);
-    expect(item.timeActive).toBe(0.5);
-    expect(item.timeWaiting).toBe(0.5);
-
     for (let i = 0; i < 7; i++) {
+      useStore.getState().addItem('proc-1');
+    }
+
+    for (let i = 0; i < 80; i++) {
       useStore.getState().tick();
     }
 
-    item = useStore.getState().items[0];
-    expect(item.status).toBe(ItemStatus.COMPLETED);
-    expect(item.completionTick).toBe(8);
+    const state = useStore.getState();
+    expect(state.items.filter((item) => item.status === ItemStatus.COMPLETED)).toHaveLength(6);
+    expect(state.items.filter((item) => item.status === ItemStatus.QUEUED && item.currentNodeId === 'proc-1')).toHaveLength(1);
+    expect(state.items.filter((item) => item.status === ItemStatus.PROCESSING)).toHaveLength(0);
+    expect(state.sharedNodeBudgetStateByNode['proc-1']?.consumedBudgetMinutes).toBe(60);
+    expect(state.sharedNodeBudgetStateByNode['proc-1']?.remainingBudgetMinutes).toBe(0);
+
+    for (let i = 0; i < 401; i++) {
+      useStore.getState().tick();
+    }
+
+    const nextDayState = useStore.getState();
+    expect(nextDayState.tickCount).toBe(481);
+    expect(nextDayState.items.some((item) => item.status === ItemStatus.PROCESSING && item.currentNodeId === 'proc-1')).toBe(true);
   });
 
   it('preserves allocationPercent when unrelated node config changes', () => {
@@ -1949,6 +1955,30 @@ describe('Store - Validation Errors', () => {
 
     const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
     expect((node!.data as any).validationError).toBe('Zero Allocation');
+  });
+
+  it('shared allocation nodes warn when a step can never fit inside the daily budget', () => {
+    setupLinearFlow();
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      sharedCapacityInputMode: 'hours',
+      sharedCapacityValue: 1,
+    });
+    useStore.getState().updateNodeData('proc-1', {
+      allocationPercent: 100,
+      processingTime: 70,
+      resources: 1,
+    });
+
+    const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
+    expect((node!.data as any).validationError).toBe('Step Exceeds Daily Budget');
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().tick();
+
+    const item = useStore.getState().items[0];
+    expect(item.status).toBe(ItemStatus.QUEUED);
+    expect(item.currentNodeId).toBe('proc-1');
   });
 
   it('settings resets clear runtime stats and stale validation immediately', () => {

@@ -209,6 +209,15 @@ export interface ResourceUtilizationSample {
 
 export type NodeUtilizationHistoryByNode = Record<string, ResourceUtilizationSample[]>;
 
+export interface SharedNodeBudgetState {
+  budgetDayKey: number | null;
+  dailyBudgetMinutes: number;
+  remainingBudgetMinutes: number;
+  consumedBudgetMinutes: number;
+}
+
+export type SharedNodeBudgetStateByNode = Record<string, SharedNodeBudgetState>;
+
 // Time unit configuration for realistic VSM metrics
 export interface TimeUnitConfig {
   ticksPerUnit: number; // How many ticks = 1 time unit
@@ -462,6 +471,7 @@ export interface SimulationState {
   kpiHistoryByPeriod: KpiHistoryByPeriod;
   nodeUtilizationHistoryByNode: NodeUtilizationHistoryByNode;
   poolUtilizationHistoryByPeriod: PoolUtilizationHistoryByPeriod;
+  sharedNodeBudgetStateByNode: SharedNodeBudgetStateByNode;
 
   // Performance: Pre-computed derived state
   itemsByNode: Map<string, ProcessItem[]>;

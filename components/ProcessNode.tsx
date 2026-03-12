@@ -5,7 +5,7 @@ import { useStore } from '../store';
 import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2 } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
 import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
-import { computeNodeLiveUtilizationForLoad, getLocalCapacityUnits, getNodeCapacityProfile, getResourcePools } from '../capacityModel';
+import { computeBudgetUtilization, getLocalCapacityUnits, getNodeCapacityProfile, getNodeSharedBudgetSummary, getResourcePools } from '../capacityModel';
 import { RESOURCE_POOL_COLOR_THEMES } from '../resourcePoolVisuals';
 import ResourcePoolAvatar from './ResourcePoolAvatar';
 
@@ -23,6 +23,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
   const resourcePools = useStore((state) => state.resourcePools);
   const blockedInboundCount = useStore((state) => state.blockedCountsByTarget.get(id) || 0);
+  const sharedNodeBudgetStateByNode = useStore((state) => state.sharedNodeBudgetStateByNode);
   const rollingUtilization = useStore((state) => getRollingNodeUtilization(state.nodeUtilizationHistoryByNode, id));
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
   const batchingEnabled = Number.isFinite(Number(data.batchSize)) && Number(data.batchSize) > 1;
@@ -56,8 +57,9 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   });
   const displayCapacity = Math.max(
     0,
-    usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
+    getLocalCapacityUnits(data.resources || 0),
   );
+  const sharedBudgetSummary = getNodeSharedBudgetSummary(id, capacityProfile, sharedNodeBudgetStateByNode);
 
   // Separate queued and processing in single pass
   const localQueuedItems: typeof items = [];
@@ -97,7 +99,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const avgWaitTime = activeCount > 0 ? waitTimeSum / activeCount : 0;
   const liveUtilization =
     usesSharedAllocation && capacityProfile
-      ? computeNodeLiveUtilizationForLoad(processingItems.length, capacityProfile)
+      ? computeBudgetUtilization(sharedBudgetSummary.consumedBudgetMinutes, sharedBudgetSummary.dailyBudgetMinutes)
       : computeNodeUtilization(items, data.resources);
 
   const formatWaitTime = (ticks: number) => {
@@ -304,7 +306,11 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                         <span className="text-slate-300">·</span>
                         <span
                           className="inline-flex items-center gap-1 whitespace-nowrap"
-                          title={`Rolling 1h average utilisation for this node. Live now: ${liveUtilization.toFixed(0)}%.`}
+                          title={
+                            usesSharedAllocation
+                              ? `Rolling 1h average utilisation for this node. Today budget used: ${liveUtilization.toFixed(0)}%.`
+                              : `Rolling 1h average utilisation for this node. Live now: ${liveUtilization.toFixed(0)}%.`
+                          }
                         >
                           <Users size={11} className="text-emerald-500 shrink-0" />
                           <span className="tabular-nums">{rollingUtilization.toFixed(0)}%</span>

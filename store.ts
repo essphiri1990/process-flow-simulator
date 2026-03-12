@@ -40,6 +40,8 @@ import {
   PoolUtilizationBucket,
   PoolUtilizationHistoryByPeriod,
   ResourcePool,
+  SharedNodeBudgetState,
+  SharedNodeBudgetStateByNode,
   SharedCapacityInputMode,
   WorkingHoursConfig,
   RunSummary,
@@ -47,6 +49,7 @@ import {
 } from './types';
 import {
   computeOpenTicksForPeriod,
+  getWorkingDayBudgetKey,
   isWorkingTick,
   normalizeWorkingHours,
 } from './timeModel';
@@ -59,6 +62,7 @@ import {
   DEFAULT_SHARED_CAPACITY_INPUT_MODE,
   DEFAULT_SHARED_CAPACITY_VALUE,
   getDefaultResourcePool,
+  getMaxPossibleProcessingTime,
   getLocalCapacityUnits,
   getNodeCapacityProfile,
   getNodeResourcePoolId,
@@ -140,6 +144,7 @@ const createEmptyPoolUtilizationHistory = (): PoolUtilizationHistoryByPeriod => 
   week: {},
   month: {},
 });
+const createEmptySharedNodeBudgetStateByNode = (): SharedNodeBudgetStateByNode => ({});
 const getNormalizedResourcePools = (
   resourcePools?: ResourcePool[],
   sharedCapacityInputMode: SharedCapacityInputMode = DEFAULT_SHARED_CAPACITY_INPUT_MODE,
@@ -319,9 +324,12 @@ const upsertKpiBucket = (
         : 0,
     resourceUtilizationAvg:
       baseBucket.availableResourceTicks + (patch.availableResourceTicks || 0) > 0
-        ? ((baseBucket.busyResourceTicks + (patch.busyResourceTicks || 0)) /
-            (baseBucket.availableResourceTicks + (patch.availableResourceTicks || 0))) *
-          100
+        ? Math.min(
+            100,
+            ((baseBucket.busyResourceTicks + (patch.busyResourceTicks || 0)) /
+              (baseBucket.availableResourceTicks + (patch.availableResourceTicks || 0))) *
+              100,
+          )
         : 0,
   };
 
@@ -374,9 +382,12 @@ const upsertPoolUtilizationBucket = (
     availableResourceTicks: baseBucket.availableResourceTicks + patch.availableResourceTicks,
     resourceUtilizationAvg:
       baseBucket.availableResourceTicks + patch.availableResourceTicks > 0
-        ? ((baseBucket.busyResourceTicks + patch.busyResourceTicks) /
-            (baseBucket.availableResourceTicks + patch.availableResourceTicks)) *
-          100
+        ? Math.min(
+            100,
+            ((baseBucket.busyResourceTicks + patch.busyResourceTicks) /
+              (baseBucket.availableResourceTicks + patch.availableResourceTicks)) *
+              100,
+          )
         : 0,
   };
 
@@ -525,6 +536,7 @@ const buildRunStateReset = () => ({
   kpiHistoryByPeriod: createEmptyKpiHistory(),
   nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
   poolUtilizationHistoryByPeriod: createEmptyPoolUtilizationHistory(),
+  sharedNodeBudgetStateByNode: createEmptySharedNodeBudgetStateByNode(),
   itemsByNode: new Map<string, ProcessItem[]>(),
   blockedCountsByTarget: new Map<string, number>(),
   itemCounts: createEmptyItemCounts(),
@@ -1184,6 +1196,54 @@ const buildNodeCapacityProfiles = (
   return profiles;
 };
 
+const createSharedNodeBudgetState = (
+  budgetDayKey: number | null,
+  dailyBudgetMinutes: number,
+): SharedNodeBudgetState => ({
+  budgetDayKey,
+  dailyBudgetMinutes,
+  remainingBudgetMinutes: dailyBudgetMinutes,
+  consumedBudgetMinutes: 0,
+});
+
+const getSharedNodeBudgetStateForTick = (
+  node: AppNode,
+  capacityProfile: ReturnType<typeof getNodeCapacityProfile> | undefined,
+  tick: number,
+  isWorking: boolean,
+  sharedNodeBudgetStateByNode: SharedNodeBudgetStateByNode,
+): SharedNodeBudgetState | null => {
+  if (!capacityProfile?.usesSharedAllocation || (node.type !== 'processNode' && node.type !== 'startNode')) {
+    return null;
+  }
+
+  const dailyBudgetMinutes = Math.max(0, capacityProfile.dailyBudgetMinutes);
+  const previousState = sharedNodeBudgetStateByNode[node.id];
+  if (!isWorking) {
+    if (!previousState) {
+      return createSharedNodeBudgetState(null, dailyBudgetMinutes);
+    }
+    return {
+      ...previousState,
+      dailyBudgetMinutes,
+      remainingBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, previousState.remainingBudgetMinutes)),
+      consumedBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, previousState.consumedBudgetMinutes)),
+    };
+  }
+
+  const budgetDayKey = getWorkingDayBudgetKey(tick, (node.data as ProcessNodeData).workingHours);
+  if (!previousState || previousState.budgetDayKey !== budgetDayKey || previousState.dailyBudgetMinutes !== dailyBudgetMinutes) {
+    return createSharedNodeBudgetState(budgetDayKey, dailyBudgetMinutes);
+  }
+
+  return {
+    ...previousState,
+    dailyBudgetMinutes,
+    remainingBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, previousState.remainingBudgetMinutes)),
+    consumedBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, previousState.consumedBudgetMinutes)),
+  };
+};
+
 const computeValidationErrorForNode = (
   node: AppNode,
   edgesBySource: Map<string, Edge[]>,
@@ -1200,8 +1260,12 @@ const computeValidationErrorForNode = (
     validationError = 'No Output Path';
   }
   if (capacityProfile?.usesSharedAllocation) {
-    if (capacityProfile.availableCapacityPerTick <= 0) {
+    if (capacityProfile.dailyBudgetMinutes <= 0) {
       validationError = 'Zero Allocation';
+    } else if (getLocalCapacityUnits(pData.resources) === 0) {
+      validationError = 'Zero Capacity';
+    } else if (getMaxPossibleProcessingTime(pData.processingTime, pData.variability || 0) > capacityProfile.dailyBudgetMinutes) {
+      validationError = 'Step Exceeds Daily Budget';
     }
     if (node.type === 'processNode' && getNodeBatchSize(pData) > 1) {
       validationError = 'Batch needs Local Cap';
@@ -1585,6 +1649,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   kpiHistoryByPeriod: createEmptyKpiHistory(),
   nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
   poolUtilizationHistoryByPeriod: createEmptyPoolUtilizationHistory(),
+  sharedNodeBudgetStateByNode: createEmptySharedNodeBudgetStateByNode(),
 
   // Performance: Pre-computed derived state
   itemsByNode: new Map(),
@@ -2916,6 +2981,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         kpiHistoryByPeriod,
         nodeUtilizationHistoryByNode,
         poolUtilizationHistoryByPeriod,
+        sharedNodeBudgetStateByNode,
         visualTransfers,
         runStartedAtMs,
         simulationSeed,
@@ -2962,6 +3028,21 @@ export const useStore = create<SimulationState>((set, get) => ({
         if (node.type === 'annotationNode') continue;
         const pData = node.data as ProcessNodeData;
         workingStatus.set(node.id, isWorkingTick(tickCount, pData.workingHours));
+      }
+
+      const nextSharedNodeBudgetStateByNode: SharedNodeBudgetStateByNode = {};
+      for (const node of nodes) {
+        if (node.type !== 'processNode' && node.type !== 'startNode') continue;
+        const budgetState = getSharedNodeBudgetStateForTick(
+          node,
+          nodeCapacityProfiles.get(node.id),
+          tickCount,
+          workingStatus.get(node.id) ?? true,
+          sharedNodeBudgetStateByNode,
+        );
+        if (budgetState) {
+          nextSharedNodeBudgetStateByNode[node.id] = budgetState;
+        }
       }
 
       // Build edge lookup by source for O(1) access
@@ -3056,27 +3137,11 @@ export const useStore = create<SimulationState>((set, get) => ({
           }
         }
       }
-      const processingWorkShareByNode = new Map<string, number>();
-      for (const node of nodes) {
-        if (node.type !== 'processNode' && node.type !== 'startNode') continue;
-        const activeProcessing = processingItemsByNode.get(node.id) || [];
-        if (activeProcessing.length === 0) {
-          processingWorkShareByNode.set(node.id, 0);
-          continue;
-        }
-        const capacityProfile = nodeCapacityProfiles.get(node.id);
-        const availableCapacityPerTick =
-          capacityProfile?.availableCapacityPerTick ??
-          getLocalCapacityUnits((node.data as ProcessNodeData).resources || 0);
-        processingWorkShareByNode.set(
-          node.id,
-          Math.min(1, availableCapacityPerTick / activeProcessing.length),
-        );
-      }
 
       // --- SINGLE PASS: Process all items and collect stats ---
       const nodesUpdates = new Map<string, { processed: number; failed: number }>();
       const processingCounts = new Map<string, number>();
+      const reservedBudgetMinutesThisTickByNode = new Map<string, number>();
       let newlyCompleted = 0;
       let newlyCompletedInEpoch = 0;
       let nextKpiHistory = kpiHistoryByPeriod;
@@ -3182,11 +3247,8 @@ export const useStore = create<SimulationState>((set, get) => ({
             const isWorking = workingStatus.get(node.id) ?? true;
             if (!isWorking) continue;
             const pData = node.data as ProcessNodeData;
-            const workShare = processingWorkShareByNode.get(node.id) || 0;
-            const waitShare = Math.max(0, 1 - workShare);
-            item.remainingTime = Math.max(0, item.remainingTime - workShare);
-            item.timeActive += workShare;
-            item.timeWaiting += waitShare;
+            item.remainingTime = Math.max(0, item.remainingTime - 1);
+            item.timeActive += 1;
             item.nodeLeadTime++;
             item.totalTime++;
 
@@ -3312,9 +3374,49 @@ export const useStore = create<SimulationState>((set, get) => ({
 
         let currentLoad = processingCounts.get(node.id) || 0;
         while (queueItems.length >= batchSize && currentLoad + batchSize <= capacityLimit) {
+          const usesSharedBudget = capacityProfile?.usesSharedAllocation ?? false;
+          const actualTime =
+            pData.processingTime === 0
+              ? 0
+              : applyVariability(
+                  pData.processingTime,
+                  pData.variability || 0,
+                  nextSimulationRandom
+                );
+
+          if (usesSharedBudget) {
+            const budgetState =
+              nextSharedNodeBudgetStateByNode[node.id] ||
+              createSharedNodeBudgetState(
+                getWorkingDayBudgetKey(tickCount, pData.workingHours),
+                Math.max(0, capacityProfile?.dailyBudgetMinutes ?? 0),
+              );
+            nextSharedNodeBudgetStateByNode[node.id] = budgetState;
+
+            if (actualTime > budgetState.dailyBudgetMinutes + 0.000001) {
+              break;
+            }
+            if (actualTime > budgetState.remainingBudgetMinutes + 0.000001) {
+              break;
+            }
+          }
+
           const batch = queueItems.splice(0, batchSize);
           currentLoad += batchSize;
           processingCounts.set(node.id, currentLoad);
+
+          if (usesSharedBudget) {
+            const budgetState = nextSharedNodeBudgetStateByNode[node.id]!;
+            budgetState.remainingBudgetMinutes = Math.max(0, budgetState.remainingBudgetMinutes - actualTime);
+            budgetState.consumedBudgetMinutes = Math.min(
+              budgetState.dailyBudgetMinutes,
+              budgetState.consumedBudgetMinutes + actualTime,
+            );
+            reservedBudgetMinutesThisTickByNode.set(
+              node.id,
+              (reservedBudgetMinutesThisTickByNode.get(node.id) || 0) + actualTime,
+            );
+          }
 
           if (pData.processingTime === 0) {
             for (const item of batch) {
@@ -3359,12 +3461,6 @@ export const useStore = create<SimulationState>((set, get) => ({
             continue;
           }
 
-          const actualTime = applyVariability(
-            pData.processingTime,
-            pData.variability || 0,
-            nextSimulationRandom
-          );
-
           for (const item of batch) {
             item.status = ItemStatus.PROCESSING;
             item.handoffTargetNodeId = null;
@@ -3393,15 +3489,19 @@ export const useStore = create<SimulationState>((set, get) => ({
           continue;
         }
         const capacityProfile = nodeCapacityProfiles.get(node.id);
+        const usesSharedBudget = capacityProfile?.usesSharedAllocation ?? false;
         const availableResourceTicks = Math.max(
           0,
-          capacityProfile?.availableCapacityPerTick ??
-            getLocalCapacityUnits((node.data as ProcessNodeData).resources || 0),
+          usesSharedBudget
+            ? capacityProfile?.availableCapacityPerTick ?? 0
+            : getLocalCapacityUnits((node.data as ProcessNodeData).resources || 0),
         );
-        const busyResourceTicks = Math.min(availableResourceTicks, processingCounts.get(node.id) || 0);
+        const busyResourceTicks = usesSharedBudget
+          ? Math.max(0, reservedBudgetMinutesThisTickByNode.get(node.id) || 0)
+          : Math.min(availableResourceTicks, processingCounts.get(node.id) || 0);
         availableResourceTicksThisTick += availableResourceTicks;
         busyResourceTicksThisTick += busyResourceTicks;
-        if (capacityMode === 'sharedAllocation' && capacityProfile?.usesSharedAllocation && capacityProfile.resourcePoolId) {
+        if (capacityMode === 'sharedAllocation' && usesSharedBudget && capacityProfile?.resourcePoolId) {
           const currentPoolTicks = poolResourceTicksThisTick.get(capacityProfile.resourcePoolId) || {
             busyResourceTicks: 0,
             availableResourceTicks: 0,
@@ -3596,6 +3696,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         kpiHistoryByPeriod: nextKpiHistory,
         nodeUtilizationHistoryByNode: nextNodeUtilizationHistory,
         poolUtilizationHistoryByPeriod: nextPoolUtilizationHistory,
+        sharedNodeBudgetStateByNode: nextSharedNodeBudgetStateByNode,
         runStartedAtMs: effectiveRunStartedAtMs,
         lastRunSummary: nextLastRunSummary,
         lastLoggedRunKey: nextLastLoggedRunKey
