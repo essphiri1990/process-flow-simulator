@@ -52,6 +52,11 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
     usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
   );
   const sharedBudgetSummary = getNodeSharedBudgetSummary(id, capacityProfile, sharedNodeBudgetStateByNode);
+  const showBudgetExhaustedWarning =
+    usesSharedAllocation &&
+    !data.validationError &&
+    sharedBudgetSummary.dailyBudgetMinutes > 0 &&
+    sharedBudgetSummary.remainingBudgetMinutes <= 0.000001;
 
   // Single pass to separate items by status
   const localQueuedItems: typeof items = [];
@@ -212,11 +217,34 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
           </div>
       )}
 
+      {showBudgetExhaustedWarning && (
+        <div
+          className="absolute -top-4 right-2 z-50"
+          title="Daily shared capacity is used up. New items wait until the next working day."
+        >
+          <svg
+            viewBox="0 0 48 44"
+            className="h-10 w-10 drop-shadow-[3px_3px_0px_rgba(15,23,42,0.95)]"
+            aria-hidden="true"
+          >
+            <path
+              d="M24 4 L44 40 H4 Z"
+              fill="#facc15"
+              stroke="#0f172a"
+              strokeWidth="4"
+              strokeLinejoin="round"
+            />
+            <path d="M24 15 V27" stroke="#0f172a" strokeWidth="4" strokeLinecap="round" />
+            <circle cx="24" cy="34" r="2.8" fill="#0f172a" />
+          </svg>
+        </div>
+      )}
+
       {/* Delete Button */}
       {!readOnlyMode ? (
         <button
             onClick={handleDelete}
-            className="absolute -top-3 -right-3 bg-white text-slate-400 border-2 border-slate-900 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] z-50 opacity-0 group-hover:opacity-100 transition-all"
+            className={`absolute -top-3 bg-white text-slate-400 border-2 border-slate-900 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] z-50 opacity-0 group-hover:opacity-100 transition-all ${showBudgetExhaustedWarning ? 'right-9' : '-right-3'}`}
             title="Delete Node"
         >
             <Trash2 size={12} />

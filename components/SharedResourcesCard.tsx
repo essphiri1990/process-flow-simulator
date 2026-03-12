@@ -153,11 +153,11 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
                   </div>
                 </div>
                 <div
-                  className="shrink-0 rounded-lg border-2 border-slate-900 px-1.5 py-0.5 text-center"
+                  className="shrink-0 w-[56px] min-w-[56px] rounded-lg border-2 border-slate-900 px-1.5 py-0.5 text-center"
                   style={{ backgroundColor: pool.capacityValue > 0 ? theme.circle : '#ffffff' }}
                   title={`Avg utilization this ${periodLabel.toLowerCase()}`}
                 >
-                  <div className="text-[13px] font-black leading-tight text-slate-900 font-mono">{utilization.toFixed(0)}%</div>
+                  <div className="text-[13px] font-black leading-tight text-slate-900 font-mono tabular-nums">{utilization.toFixed(0)}%</div>
                   <div className="text-[7px] font-bold uppercase tracking-[0.1em] text-slate-700">Util</div>
                 </div>
               </div>
