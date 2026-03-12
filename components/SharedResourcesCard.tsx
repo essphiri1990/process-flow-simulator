@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Users, X } from 'lucide-react';
 import { useStore } from '../store';
-import { getAllSharedAllocationTotals, getPoolSharedBudgetSummary, getResourcePools } from '../capacityModel';
+import { getAllSharedAllocationTotals, getPoolSharedBudgetSummary, getResourcePools, WORKDAY_HOURS } from '../capacityModel';
 import { getLatestPoolUtilizationAverage } from '../metrics';
 import { RESOURCE_POOL_COLOR_THEMES } from '../resourcePoolVisuals';
 import ResourcePoolAvatar from './ResourcePoolAvatar';
@@ -10,16 +10,8 @@ interface SharedResourcesCardProps {
   hasConfigPanel?: boolean;
 }
 
-const PERIOD_LABELS = {
-  hour: 'Hour',
-  day: 'Day',
-  week: 'Week',
-  month: 'Month',
-} as const;
-
 const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPanel = false }) => {
   const capacityMode = useStore((state) => state.capacityMode);
-  const demandUnit = useStore((state) => state.demandUnit);
   const nodes = useStore((state) => state.nodes);
   const resourcePools = useStore((state) => state.resourcePools);
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
@@ -51,9 +43,10 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
       const barAllocationPercent = Math.max(0, Math.min(100, displayedAllocationPercent));
       const utilization = getLatestPoolUtilizationAverage(
         poolUtilizationHistoryByPeriod,
-        demandUnit,
+        'day',
         pool.id,
       );
+      const poolFte = (totals?.totalSharedHoursPerDay ?? 0) / WORKDAY_HOURS;
       const budgetSummary = getPoolSharedBudgetSummary(
         nodes as any,
         {
@@ -70,6 +63,7 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
         pool,
         totals,
         utilization,
+        poolFte,
         budgetSummary,
         allocationUsesEqualSplit,
         displayedAllocationPercent,
@@ -78,7 +72,6 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
     });
   }, [
     capacityMode,
-    demandUnit,
     nodes,
     normalizedResourcePools,
     poolUtilizationHistoryByPeriod,
@@ -91,7 +84,7 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
   if (capacityMode !== 'sharedAllocation') return null;
 
   const positionClass = hasConfigPanel ? 'right-[21rem]' : 'right-3';
-  const periodLabel = PERIOD_LABELS[demandUnit] || 'Period';
+  const totalResourcesFte = rows.reduce((sum, row) => sum + row.poolFte, 0);
 
   if (!showSharedResourcesCard) {
     return (
@@ -114,8 +107,13 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
       {/* Header */}
       <div className="rounded-t-[14px] border-b-2 border-slate-900 bg-[#ff8fab] px-3 py-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-900">
-            Resources · {periodLabel}
+          <div className="flex items-center gap-2">
+            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-900">
+              Resources · Day
+            </div>
+            <div className="rounded-full border-2 border-slate-900 bg-white px-2 py-0.5 text-[9px] font-black text-slate-900">
+              {totalResourcesFte.toFixed(1)} FTE
+            </div>
           </div>
           <button
             type="button"
@@ -130,7 +128,7 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
 
       {/* Pool rows */}
       <div className="max-h-[52vh] space-y-2 overflow-y-auto px-2.5 py-2.5">
-        {rows.map(({ pool, totals, utilization, budgetSummary, allocationUsesEqualSplit, displayedAllocationPercent, barAllocationPercent }) => {
+        {rows.map(({ pool, totals, utilization, poolFte, budgetSummary, allocationUsesEqualSplit, displayedAllocationPercent, barAllocationPercent }) => {
           const theme = RESOURCE_POOL_COLOR_THEMES[pool.colorId!];
           const isOverAllocated = (totals?.totalAllocatedPercent ?? 0) > 100;
           return (
@@ -149,13 +147,13 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
                       ? 'Auto split'
                       : `${totals?.workNodeCount ?? 0} step${(totals?.workNodeCount ?? 0) === 1 ? '' : 's'}`}
                     {' · '}
-                    {(totals?.totalSharedHoursPerDay ?? 0).toFixed(1)}h/day pool
+                    {poolFte.toFixed(1)} FTE
                   </div>
                 </div>
                 <div
                   className="shrink-0 w-[56px] min-w-[56px] rounded-lg border-2 border-slate-900 px-1.5 py-0.5 text-center"
                   style={{ backgroundColor: pool.capacityValue > 0 ? theme.circle : '#ffffff' }}
-                  title={`Avg utilization this ${periodLabel.toLowerCase()}`}
+                  title="Avg utilization this day"
                 >
                   <div className="text-[13px] font-black leading-tight text-slate-900 font-mono tabular-nums">{utilization.toFixed(0)}%</div>
                   <div className="text-[7px] font-bold uppercase tracking-[0.1em] text-slate-700">Util</div>
