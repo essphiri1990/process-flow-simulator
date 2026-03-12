@@ -129,7 +129,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   const isSharedAllocationNode = capacityProfile.usesSharedAllocation && (isStartNode || isStandardNode);
   const derivedCapacityLimit = Math.max(
     0,
-    getLocalCapacityUnits(data.resources || 0),
+    capacityProfile.usesSharedAllocation ? capacityProfile.maxConcurrentItems : getLocalCapacityUnits(data.resources || 0),
   );
   const sharedBudgetSummary = useMemo(
     () => getNodeSharedBudgetSummary(node.id, capacityProfile, sharedNodeBudgetStateByNode),
@@ -389,7 +389,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
               onChange={(e) => handleChange('resources', Math.max(0, parseInt(e.target.value || '0', 10)))}
             />
             {isSharedAllocationNode && (
-              <p className="mt-1 text-[10px] text-slate-500">Sets how many items can be active at the same time. Allocation sets the daily budget.</p>
+              <p className="mt-1 text-[10px] text-slate-500">Sets the base active-slot cap. Shared allocation can raise the effective cap when the daily budget supports more parallel work.</p>
             )}
           </div>
         )}

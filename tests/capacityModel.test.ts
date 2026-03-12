@@ -312,6 +312,38 @@ describe('capacityModel', () => {
     expect(profile.maxConcurrentItems).toBe(1);
   });
 
+  it('raises shared active cap when the daily budget supports more parallel work', () => {
+    const node = {
+      id: 'proc-1',
+      type: 'processNode',
+      position: { x: 200, y: 0 },
+      data: {
+        label: 'Wash',
+        processingTime: 10,
+        resources: 1,
+        allocationPercent: 100,
+        quality: 1,
+        variability: 0,
+        stats: { processed: 0, failed: 0, maxQueue: 0 },
+        routingWeights: {},
+      },
+    } as any;
+
+    const profile = getNodeCapacityProfile(
+      node,
+      [node],
+      {
+        capacityMode: 'sharedAllocation',
+        sharedCapacityInputMode: 'hours',
+        sharedCapacityValue: 32,
+      },
+    );
+
+    expect(profile.allocatedHoursPerDay).toBe(32);
+    expect(profile.availableCapacityPerTick).toBe(4);
+    expect(profile.maxConcurrentItems).toBe(4);
+  });
+
   it('computes shared live utilization from today budget consumption', () => {
     const nodes = [
       {

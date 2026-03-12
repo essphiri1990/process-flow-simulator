@@ -296,7 +296,9 @@ export const getNodeCapacityProfile = (
   const availableCapacityPerTick =
     openTicksPerDay > 0 ? dailyBudgetMinutes / openTicksPerDay : 0;
   const equivalentResources = allocatedHoursPerDay / WORKDAY_HOURS;
-  const maxConcurrentItems = resources;
+  const derivedCapacitySlots =
+    availableCapacityPerTick > 0 ? Math.max(1, Math.ceil(availableCapacityPerTick)) : 0;
+  const maxConcurrentItems = derivedCapacitySlots > 0 ? Math.max(resources, derivedCapacitySlots) : 0;
 
   return {
     capacityMode: settings.capacityMode,

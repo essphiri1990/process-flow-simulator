@@ -49,7 +49,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
     : null;
   const displayCapacity = Math.max(
     0,
-    getLocalCapacityUnits(data.resources || 0),
+    usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
   );
   const sharedBudgetSummary = getNodeSharedBudgetSummary(id, capacityProfile, sharedNodeBudgetStateByNode);
 
