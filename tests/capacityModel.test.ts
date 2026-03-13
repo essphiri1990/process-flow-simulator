@@ -376,6 +376,7 @@ describe('capacityModel', () => {
           dailyBudgetMinutes: 240,
           remainingBudgetMinutes: 60,
           consumedBudgetMinutes: 180,
+          budgetExhausted: false,
         },
       },
     );

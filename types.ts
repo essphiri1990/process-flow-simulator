@@ -214,6 +214,7 @@ export interface SharedNodeBudgetState {
   dailyBudgetMinutes: number;
   remainingBudgetMinutes: number;
   consumedBudgetMinutes: number;
+  budgetExhausted: boolean;
 }
 
 export type SharedNodeBudgetStateByNode = Record<string, SharedNodeBudgetState>;

@@ -2087,6 +2087,36 @@ describe('Store - Validation Errors', () => {
     expect(item.currentNodeId).toBe('proc-1');
   });
 
+  it('marks shared allocation nodes as budget exhausted when queued work no longer fits today', () => {
+    setupLinearFlow();
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      sharedCapacityInputMode: 'hours',
+      sharedCapacityValue: 1,
+    });
+    useStore.getState().updateNodeData('proc-1', {
+      allocationPercent: 100,
+      processingTime: 50,
+      resources: 2,
+      variability: 0,
+    });
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().addItem('proc-1');
+    useStore.getState().tick();
+
+    const budgetState = useStore.getState().sharedNodeBudgetStateByNode['proc-1'];
+    const queuedItems = useStore
+      .getState()
+      .items.filter((item) => item.currentNodeId === 'proc-1' && item.status === ItemStatus.QUEUED);
+
+    expect(budgetState?.dailyBudgetMinutes).toBe(60);
+    expect(budgetState?.remainingBudgetMinutes).toBe(10);
+    expect(budgetState?.consumedBudgetMinutes).toBe(50);
+    expect(budgetState?.budgetExhausted).toBe(true);
+    expect(queuedItems).toHaveLength(1);
+  });
+
   it('settings resets clear runtime stats and stale validation immediately', () => {
     setupLinearFlow();
 

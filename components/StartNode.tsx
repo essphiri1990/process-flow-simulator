@@ -56,7 +56,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
     usesSharedAllocation &&
     !data.validationError &&
     sharedBudgetSummary.dailyBudgetMinutes > 0 &&
-    sharedBudgetSummary.remainingBudgetMinutes <= 0.000001;
+    sharedBudgetSummary.budgetExhausted;
 
   // Single pass to separate items by status
   const localQueuedItems: typeof items = [];

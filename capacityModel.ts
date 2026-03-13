@@ -55,6 +55,7 @@ export interface SharedBudgetSummary {
   dailyBudgetMinutes: number;
   remainingBudgetMinutes: number;
   consumedBudgetMinutes: number;
+  budgetExhausted: boolean;
 }
 
 type WorkNode = AppNode & {
@@ -338,6 +339,7 @@ export const getNodeSharedBudgetSummary = (
       dailyBudgetMinutes,
       remainingBudgetMinutes: dailyBudgetMinutes,
       consumedBudgetMinutes: 0,
+      budgetExhausted: false,
     };
   }
 
@@ -345,6 +347,7 @@ export const getNodeSharedBudgetSummary = (
     dailyBudgetMinutes,
     remainingBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, saved.remainingBudgetMinutes)),
     consumedBudgetMinutes: Math.max(0, Math.min(dailyBudgetMinutes, saved.consumedBudgetMinutes)),
+    budgetExhausted: saved.budgetExhausted === true,
   };
 };
 
@@ -371,6 +374,7 @@ export const getPoolSharedBudgetSummary = (
     dailyBudgetMinutes,
     remainingBudgetMinutes,
     consumedBudgetMinutes,
+    budgetExhausted: false,
   };
 };
 
