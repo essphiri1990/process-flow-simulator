@@ -102,6 +102,19 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   );
   const activeCount = totalQueuedCount + processingItems.length;
   const avgWaitTime = activeCount > 0 ? waitTimeSum / activeCount : 0;
+  const showQueueCapacityWarning =
+    !data.validationError &&
+    localQueuedItems.length > 0 &&
+    displayCapacity > 0 &&
+    processingItems.length >= displayCapacity;
+  const showBlockedInboundWarning = !data.validationError && blockedInboundCount > 0;
+  const showRuntimeCapacityWarning =
+    showBudgetExhaustedWarning || showQueueCapacityWarning || showBlockedInboundWarning;
+  const runtimeCapacityWarningTitle = showBudgetExhaustedWarning
+    ? 'Daily shared capacity is used up. New items wait until the next working day.'
+    : showBlockedInboundWarning
+      ? 'Incoming items are blocked because this node cannot accept more work right now.'
+      : 'Node is at capacity. Queued items are waiting for a free slot.';
   const liveUtilization =
     usesSharedAllocation && capacityProfile
       ? computeBudgetUtilization(sharedBudgetSummary.consumedBudgetMinutes, sharedBudgetSummary.dailyBudgetMinutes)
@@ -237,10 +250,10 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
           </div>
       )}
 
-      {showBudgetExhaustedWarning && (
+      {showRuntimeCapacityWarning && (
         <div
           className="absolute -top-4 right-2 z-50"
-          title="Daily shared capacity is used up. New items wait until the next working day."
+          title={runtimeCapacityWarningTitle}
         >
           <svg
             viewBox="0 0 48 44"
@@ -264,7 +277,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       {!readOnlyMode ? (
         <button
             onClick={handleDelete}
-            className={`absolute -top-3 bg-white text-slate-400 border-2 border-slate-900 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] z-50 opacity-0 group-hover:opacity-100 transition-all ${showBudgetExhaustedWarning ? 'right-9' : '-right-3'}`}
+            className={`absolute -top-3 bg-white text-slate-400 border-2 border-slate-900 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] z-50 opacity-0 group-hover:opacity-100 transition-all ${showRuntimeCapacityWarning ? 'right-9' : '-right-3'}`}
             title="Delete Node"
         >
             <Trash2 size={12} />

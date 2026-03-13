@@ -104,4 +104,48 @@ describe('ProcessNode shared budget warning', () => {
       screen.getByTitle('Daily shared capacity is used up. New items wait until the next working day.'),
     ).toBeInTheDocument();
   });
+
+  it('shows the warning triangle when incoming work is blocked at a downstream node', () => {
+    const node = {
+      id: 'proc-1',
+      type: 'processNode' as const,
+      position: { x: 0, y: 0 },
+      data: {
+        label: 'Review',
+        processingTime: 10,
+        resources: 1,
+        quality: 1,
+        variability: 0,
+        stats: { processed: 0, failed: 0, maxQueue: 0 },
+        routingWeights: {},
+        flowMode: 'pull' as const,
+      },
+    };
+
+    const blockedCountsByTarget = new Map<string, number>();
+    blockedCountsByTarget.set('proc-1', 2);
+
+    resetUiStore({
+      nodes: [node] as any,
+      blockedCountsByTarget,
+    });
+
+    render(
+      <ProcessNode
+        id={node.id}
+        data={node.data as any}
+        type={node.type}
+        selected={false}
+        isConnectable
+        xPos={0}
+        yPos={0}
+        zIndex={0}
+        dragging={false}
+      />,
+    );
+
+    expect(
+      screen.getByTitle('Incoming items are blocked because this node cannot accept more work right now.'),
+    ).toBeInTheDocument();
+  });
 });
