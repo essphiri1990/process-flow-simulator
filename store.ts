@@ -166,6 +166,49 @@ const getLegacySharedCapacityFields = (resourcePools: ResourcePool[]) => {
   };
 };
 
+const createDefaultCapacityState = () => {
+  const resourcePools = getNormalizedResourcePools(
+    undefined,
+    DEFAULT_SHARED_CAPACITY_INPUT_MODE,
+    DEFAULT_SHARED_CAPACITY_VALUE,
+  );
+  const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+
+  return {
+    capacityMode: 'local' as CapacityMode,
+    sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+    sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+    resourcePools,
+  };
+};
+
+const getScenarioCapacityState = (scenario: {
+  capacityMode?: CapacityMode;
+  sharedCapacityInputMode?: SharedCapacityInputMode;
+  sharedCapacityValue?: number;
+  resourcePools?: ResourcePool[];
+}) => {
+  const capacityMode = scenario.capacityMode ?? 'local';
+  const sharedCapacityInputMode =
+    scenario.sharedCapacityInputMode ?? DEFAULT_SHARED_CAPACITY_INPUT_MODE;
+  const sharedCapacityValue = Number.isFinite(scenario.sharedCapacityValue)
+    ? Math.max(0, Number(scenario.sharedCapacityValue))
+    : DEFAULT_SHARED_CAPACITY_VALUE;
+  const resourcePools = getNormalizedResourcePools(
+    scenario.resourcePools,
+    sharedCapacityInputMode,
+    sharedCapacityValue,
+  );
+  const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+
+  return {
+    capacityMode,
+    sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
+    sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+    resourcePools,
+  };
+};
+
 const normalizeNodesForResourcePools = (
   nodes: AppNode[],
   resourcePools: ResourcePool[],
@@ -516,6 +559,38 @@ const createQueuedItem = (targetNodeId: string, tick: number, metricsEpoch: numb
   completionTick: null,
   terminalNodeId: null,
 });
+
+const createPastedNode = (
+  sourceNode: AppNode,
+  position?: { x: number; y: number },
+): AppNode => {
+  const nextPosition = {
+    x: Number.isFinite(position?.x) ? Number(position?.x) : sourceNode.position.x,
+    y: Number.isFinite(position?.y) ? Number(position?.y) : sourceNode.position.y,
+  };
+
+  if (sourceNode.type === 'annotationNode') {
+    return {
+      id: generateId(),
+      type: 'annotationNode',
+      position: nextPosition,
+      data: cloneSerializable(sourceNode.data),
+    };
+  }
+
+  const sourceData = cloneSerializable(sourceNode.data as ProcessNodeData);
+  return {
+    id: generateId(),
+    type: sourceNode.type,
+    position: nextPosition,
+    data: {
+      ...sourceData,
+      isSelected: undefined,
+      stats: { processed: 0, failed: 0, maxQueue: 0 },
+      validationError: undefined,
+    },
+  } as AppNode;
+};
 
 const buildRunStateReset = () => ({
   items: [] as ProcessItem[],
@@ -2290,6 +2365,15 @@ export const useStore = create<SimulationState>((set, get) => ({
     scheduleAutosave(get);
   },
 
+  pasteNode: (copiedNode, position) => {
+    if (get().readOnlyMode) return null;
+    pushUndoSnapshot(get(), set);
+    const pastedNode = createPastedNode(copiedNode, position);
+    set((state) => reconcileGraphState(state, [...state.nodes, pastedNode], state.edges));
+    scheduleAutosave(get);
+    return pastedNode.id;
+  },
+
   updateNodeData: (id, data) => {
     if (get().readOnlyMode) return;
     pushUndoSnapshot(get(), set);
@@ -2602,30 +2686,25 @@ export const useStore = create<SimulationState>((set, get) => ({
           pushUndoSnapshot(get(), set);
           clearVisualTransferCleanupTimers();
           resetSimulationRng(get().simulationSeed);
-          const capacityMode = scenario.capacityMode ?? get().capacityMode;
-          const sharedCapacityInputMode = scenario.sharedCapacityInputMode ?? get().sharedCapacityInputMode;
-          const sharedCapacityValue = Number.isFinite(scenario.sharedCapacityValue)
-            ? Math.max(0, Number(scenario.sharedCapacityValue))
-            : get().sharedCapacityValue;
-          const resourcePools = getNormalizedResourcePools(
-            scenario.resourcePools ?? get().resourcePools,
-            sharedCapacityInputMode,
-            sharedCapacityValue,
-          );
-          const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
+          const capacityState = getScenarioCapacityState({
+            capacityMode: scenario.capacityMode,
+            sharedCapacityInputMode: scenario.sharedCapacityInputMode,
+            sharedCapacityValue: scenario.sharedCapacityValue,
+            resourcePools: scenario.resourcePools,
+          });
           const nodes = normalizeNodesForResourcePools(
             JSON.parse(JSON.stringify(scenario.nodes)) as AppNode[],
-            resourcePools,
+            capacityState.resourcePools,
           );
           const edges = normalizeFlowEdgeHandles(
             nodes,
             JSON.parse(JSON.stringify(scenario.edges)) as Edge[]
           );
           const nextNodes = resetRuntimeNodeState(nodes, edges, {
-            capacityMode,
-            sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
-            sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
-            resourcePools,
+            capacityMode: capacityState.capacityMode,
+            sharedCapacityInputMode: capacityState.sharedCapacityInputMode,
+            sharedCapacityValue: capacityState.sharedCapacityValue,
+            resourcePools: capacityState.resourcePools,
           });
           const demandMode = scenario.demandMode ?? 'auto';
           const demandUnit = scenario.demandUnit ?? 'week';
@@ -2635,10 +2714,10 @@ export const useStore = create<SimulationState>((set, get) => ({
               demandMode,
               demandUnit,
               demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
-              capacityMode,
-              sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
-              sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
-              resourcePools,
+              capacityMode: capacityState.capacityMode,
+              sharedCapacityInputMode: capacityState.sharedCapacityInputMode,
+              sharedCapacityValue: capacityState.sharedCapacityValue,
+              resourcePools: capacityState.resourcePools,
               currentCanvasId: null,
               currentCanvasName: SCENARIO_NAMES[scenarioKey] || 'Untitled Canvas',
               ...buildRunStateReset()
@@ -2859,9 +2938,14 @@ export const useStore = create<SimulationState>((set, get) => ({
     if (get().readOnlyMode) return;
     pushUndoSnapshot(get(), set);
     resetSimulationRng(get().simulationSeed);
+    const defaultCapacityState = createDefaultCapacityState();
     set({
       nodes: [],
       edges: [],
+      capacityMode: defaultCapacityState.capacityMode,
+      sharedCapacityInputMode: defaultCapacityState.sharedCapacityInputMode,
+      sharedCapacityValue: defaultCapacityState.sharedCapacityValue,
+      resourcePools: defaultCapacityState.resourcePools,
       ...buildRunStateReset(),
       currentCanvasId: null,
       currentCanvasName: 'Untitled Canvas',

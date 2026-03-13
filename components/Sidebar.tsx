@@ -11,9 +11,7 @@ import {
   Upload,
   Download,
   Trash2,
-  Settings,
   ChevronDown,
-  Sparkles,
   X,
 } from 'lucide-react';
 
@@ -23,7 +21,7 @@ interface SidebarProps {
   onClose: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) => {
+const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const {
     addNode,
     addStartNode,
@@ -69,85 +67,94 @@ const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) =>
     e.target.value = '';
   };
 
+  const SectionLabel = ({ children }: { children: React.ReactNode }) => (
+    <div className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400 mb-2">{children}</div>
+  );
+
   return (
     <>
       {/* Backdrop */}
       {isOpen && (
         <div
-          className="fixed inset-0 bg-black/10 z-20"
+          className="fixed inset-0 bg-[#0f172a]/12 z-40"
           onClick={onClose}
         />
       )}
 
       {/* Sidebar Panel */}
       <aside
-        className={`fixed top-3 left-3 bottom-[80px] w-64 bg-white border-2 border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] z-30 flex flex-col rounded-2xl transform transition-transform duration-300 ease-in-out ${
-          isOpen ? 'translate-x-0' : '-translate-x-[calc(100%+12px)]'
+        className={`fixed top-3 left-3 bottom-[80px] w-64 bg-white border-2 border-slate-900 z-50 flex flex-col rounded-2xl transform transition-all duration-300 ease-in-out ${
+          isOpen
+            ? 'translate-x-0 opacity-100 shadow-[6px_6px_0px_0px_rgba(15,23,42,0.9)]'
+            : '-translate-x-[calc(100%+24px)] opacity-0 pointer-events-none shadow-none'
         }`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 pt-4 pb-3 flex-shrink-0">
+        <div className="flex items-center justify-between border-b-2 border-slate-900 bg-slate-50 px-4 py-3 flex-shrink-0 rounded-t-[14px]">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-blue-600 rounded-xl flex items-center justify-center shadow-md shadow-indigo-200/50">
-              <Layers size={15} className="text-white" strokeWidth={2.5} />
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl border-2 border-slate-900 bg-white shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)]">
+              <Layers size={15} className="text-slate-900" strokeWidth={2.6} />
             </div>
             <div>
-              <h1 className="text-sm font-semibold text-slate-900 leading-none">Process Flow</h1>
-              <p className="text-[10px] text-slate-400 mt-0.5 font-medium">Simulator</p>
+              <h1 className="text-sm font-black uppercase tracking-[0.08em] text-slate-900 leading-none">Process Flow</h1>
+              <p className="text-[10px] text-slate-400 mt-0.5 font-bold uppercase tracking-[0.1em]">Simulator</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-300 hover:bg-slate-100 hover:text-slate-500 transition-all"
+            className="rounded-lg border-2 border-slate-900 bg-white p-1.5 text-slate-500 transition-all hover:bg-slate-100 hover:text-slate-700 active:translate-y-[1px]"
           >
             <X size={14} />
           </button>
         </div>
 
         {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-3">
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
 
-          {/* Node Tools — 2x2 Grid */}
+          {/* Nodes — Primary action area */}
           <div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">Nodes</span>
-            <div className="grid grid-cols-2 gap-1.5">
+            <SectionLabel>Add Node</SectionLabel>
+            <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => { addStartNode(); onClose(); }}
-                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-emerald-50 hover:border-emerald-200 active:scale-[0.97] transition-all"
+                className="group flex flex-col items-center gap-2 rounded-xl border-2 border-slate-200 bg-white py-4 transition-all hover:border-slate-900 hover:shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] hover:-translate-y-0.5 active:translate-y-[1px] active:shadow-none"
               >
-                <PlayCircle size={18} className="text-emerald-500 group-hover:text-emerald-600 transition-colors" />
-                <span className="text-[11px] font-medium text-slate-500 group-hover:text-emerald-700">Start</span>
+                <PlayCircle size={28} className="text-emerald-500" strokeWidth={1.8} />
+                <span className="text-xs font-bold text-slate-500 group-hover:text-slate-700">Start</span>
               </button>
               <button
                 onClick={() => { addNode(); onClose(); }}
-                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-blue-50 hover:border-blue-200 active:scale-[0.97] transition-all"
+                className="group flex flex-col items-center gap-2 rounded-xl border-2 border-slate-200 bg-white py-4 transition-all hover:border-slate-900 hover:shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] hover:-translate-y-0.5 active:translate-y-[1px] active:shadow-none"
               >
-                <PlusCircle size={18} className="text-blue-500 group-hover:text-blue-600 transition-colors" />
-                <span className="text-[11px] font-medium text-slate-500 group-hover:text-blue-700">Process</span>
+                <PlusCircle size={28} className="text-blue-500" strokeWidth={1.8} />
+                <span className="text-xs font-bold text-slate-500 group-hover:text-slate-700">Process</span>
               </button>
               <button
                 onClick={() => { addEndNode(); onClose(); }}
-                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-slate-100 hover:border-slate-200 active:scale-[0.97] transition-all"
+                className="group flex flex-col items-center gap-2 rounded-xl border-2 border-slate-200 bg-white py-4 transition-all hover:border-slate-900 hover:shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] hover:-translate-y-0.5 active:translate-y-[1px] active:shadow-none"
               >
-                <StopCircle size={18} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
-                <span className="text-[11px] font-medium text-slate-500 group-hover:text-slate-700">End</span>
+                <StopCircle size={28} className="text-slate-400" strokeWidth={1.8} />
+                <span className="text-xs font-bold text-slate-500 group-hover:text-slate-700">End</span>
               </button>
               <button
                 onClick={() => { addAnnotation(); onClose(); }}
-                className="group flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-amber-50 hover:border-amber-200 active:scale-[0.97] transition-all"
+                className="group flex flex-col items-center gap-2 rounded-xl border-2 border-slate-200 bg-white py-4 transition-all hover:border-slate-900 hover:shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)] hover:-translate-y-0.5 active:translate-y-[1px] active:shadow-none"
               >
-                <StickyNote size={18} className="text-amber-400 group-hover:text-amber-500 transition-colors" />
-                <span className="text-[11px] font-medium text-slate-500 group-hover:text-amber-700">Note</span>
+                <StickyNote size={28} className="text-amber-400" strokeWidth={1.8} />
+                <span className="text-xs font-bold text-slate-500 group-hover:text-slate-700">Note</span>
               </button>
             </div>
           </div>
 
+          {/* Divider */}
+          <div className="border-t border-slate-100" />
+
           {/* Scenario */}
           <div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">Scenario</span>
+            <SectionLabel>Scenario</SectionLabel>
             <div className="relative">
               <select
-                className="w-full appearance-none bg-slate-50 border border-slate-100 hover:border-slate-200 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-600 outline-none cursor-pointer hover:bg-slate-100 transition-all pr-8"
+                className="w-full appearance-none rounded-xl border-2 border-slate-900 bg-white px-3 py-2 pr-8 text-xs font-bold text-slate-700 outline-none cursor-pointer transition-all hover:bg-slate-50"
                 onChange={(e) => {
                   const val = e.target.value;
                   setConfirmAction({
@@ -169,31 +176,37 @@ const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) =>
             </div>
           </div>
 
+          {/* Divider */}
+          <div className="border-t border-slate-100" />
+
           {/* Canvas */}
           <div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">Canvas</span>
+            <SectionLabel>Canvas</SectionLabel>
             <CanvasManager />
           </div>
 
-          {/* File Actions — Compact Row */}
+          {/* Divider */}
+          <div className="border-t border-slate-100" />
+
+          {/* File */}
           <div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1.5 block">File</span>
-            <div className="flex gap-1.5">
+            <SectionLabel>File</SectionLabel>
+            <div className="flex gap-2">
               <button
                 onClick={exportJson}
-                className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-500 hover:bg-slate-100 hover:border-slate-200 hover:text-slate-700 active:scale-[0.97] transition-all"
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border-2 border-slate-900 bg-white py-2 text-slate-600 transition-all hover:bg-slate-50 hover:-translate-y-0.5 active:translate-y-[1px]"
                 title="Export JSON"
               >
-                <Download size={14} />
-                <span className="text-[11px] font-medium">Export</span>
+                <Download size={13} />
+                <span className="text-[11px] font-bold">Export</span>
               </button>
               <button
                 onClick={handleImportClick}
-                className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-500 hover:bg-slate-100 hover:border-slate-200 hover:text-slate-700 active:scale-[0.97] transition-all"
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border-2 border-slate-900 bg-white py-2 text-slate-600 transition-all hover:bg-slate-50 hover:-translate-y-0.5 active:translate-y-[1px]"
                 title="Import JSON"
               >
-                <Upload size={14} />
-                <span className="text-[11px] font-medium">Import</span>
+                <Upload size={13} />
+                <span className="text-[11px] font-bold">Import</span>
               </button>
               <input
                 type="file"
@@ -211,25 +224,15 @@ const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings, isOpen, onClose }) =>
                     action: () => { clearCanvas(); onClose(); },
                   });
                 }}
-                className="flex items-center justify-center w-9 py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-400 hover:bg-red-50 hover:border-red-200 hover:text-red-500 active:scale-[0.97] transition-all"
+                className="flex items-center justify-center w-9 rounded-xl border-2 border-slate-200 bg-white py-2 text-slate-400 transition-all hover:border-red-300 hover:text-red-500 hover:bg-red-50 active:translate-y-[1px]"
                 title="Clear Canvas"
               >
-                <Trash2 size={14} />
+                <Trash2 size={13} />
               </button>
             </div>
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex-shrink-0 px-3 pb-3">
-          <button
-            onClick={() => { onOpenSettings(); onClose(); }}
-            className="flex items-center justify-center gap-2 w-full py-2 rounded-xl bg-slate-50 border border-slate-100 text-slate-500 hover:bg-slate-100 hover:border-slate-200 hover:text-slate-700 active:scale-[0.97] transition-all"
-          >
-            <Settings size={14} />
-            <span className="text-[11px] font-medium">Settings</span>
-          </button>
-        </div>
       </aside>
 
       {/* Confirm Dialog */}

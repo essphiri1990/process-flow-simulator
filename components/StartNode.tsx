@@ -2,7 +2,7 @@ import React, { memo, useRef } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../types';
 import { useStore } from '../store';
-import { Play, Zap, Clock, Users, AlertTriangle, User, Box, FileText, Trash2 } from 'lucide-react';
+import { Play, Zap, Clock, Users, AlertTriangle, User, Box, FileText, Trash2, Gauge } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
 import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
 import { computeBudgetUtilization, getLocalCapacityUnits, getNodeCapacityProfile, getNodeSharedBudgetSummary, getResourcePools } from '../capacityModel';
@@ -206,10 +206,6 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
         </div>
       ) : null}
 
-      {/* Badge */}
-      <div className={`absolute -top-3 bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-full border-2 border-emerald-800 shadow-[2px_2px_0px_0px_rgba(6,95,70,0.8)] z-50 flex items-center gap-1 uppercase tracking-wider ${usesSharedAllocation ? 'right-12' : 'left-4'}`}>
-          <Play size={10} fill="currentColor" /> Start
-      </div>
 
       {data.validationError && (
           <div className="absolute -top-3 -right-2 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-md z-50 animate-bounce flex items-center gap-1">
@@ -258,6 +254,9 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
       <Handle type="source" position={Position.Top} id="top" className={handleClassName} style={topHandleStyle} />
 
       <div className="overflow-hidden rounded-[10px] w-full h-full">
+          {/* Start accent bar */}
+          <div className="h-1.5 bg-emerald-500" />
+
           {/* Header */}
           <div
             className="border-b px-4 py-3 relative"
@@ -266,9 +265,11 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
               borderColor: (data.headerColor || defaultHeaderColor) + '60',
             }}
           >
-             <div className="flex items-start gap-2 min-w-0">
-                <div className="bg-emerald-100 p-1 rounded-full text-emerald-700 shadow-sm shrink-0" title="Start Node">
-                    <Zap size={12} fill="currentColor" />
+             <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                    <span className="inline-flex items-center gap-1 bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-full border-2 border-emerald-800 shadow-[2px_2px_0px_0px_rgba(6,95,70,0.8)] uppercase tracking-wider leading-none">
+                      <Play size={10} fill="currentColor" /> Start
+                    </span>
                 </div>
                 <div className="min-w-0 flex-1">
                     <div className="font-bold text-slate-800 leading-tight truncate">{data.label}</div>
@@ -303,7 +304,7 @@ const StartNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                               : `Rolling 1h average utilisation for this node. Live now: ${liveUtilization.toFixed(0)}%.`
                           }
                         >
-                          <Users size={11} className="text-emerald-500 shrink-0" />
+                          <Gauge size={11} className="text-emerald-500 shrink-0" />
                           <span className="tabular-nums">{rollingUtilization.toFixed(0)}%</span>
                         </span>
                     </div>

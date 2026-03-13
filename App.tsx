@@ -8,6 +8,7 @@ import ReactFlow, {
   Edge,
   Connection,
   ConnectionLineType,
+  useReactFlow,
 } from 'reactflow';
 
 import { useStore } from './store';
@@ -32,9 +33,10 @@ import { computeLeadMetrics } from './metrics';
 import { getProcessBoxSdk } from './processBoxSdk';
 import { shouldRenderProcessFlowSessionPanel } from './sessionSupport';
 import { getLastCanvasId } from './canvas-storage';
-import { CanvasMetadata } from './types';
+import { AppNode, CanvasMetadata } from './types';
+import { showToast } from './components/Toast';
 
-import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X, CloudSun, Undo2 } from 'lucide-react';
+import { ArrowLeft, MousePointer2, Info, Menu, BookOpen, PlayCircle, X, CloudSun, Undo2, Settings } from 'lucide-react';
 
 const nodeTypes = {
   processNode: ProcessNode,
@@ -58,6 +60,27 @@ const ModalLoading = ({ label }: { label: string }) => (
     </div>
   </div>
 );
+
+const cloneNodeSnapshot = <T,>(value: T): T => {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+};
+
+const getNodeClipboardLabel = (node: AppNode | null | undefined) => {
+  if (!node) return 'node';
+  const label = typeof node.data?.label === 'string' ? node.data.label.trim() : '';
+  return label || 'node';
+};
+
+const getNextPastePosition = (node: AppNode, pasteCount: number) => {
+  const offset = 48 * (pasteCount + 1);
+  return {
+    x: node.position.x + offset,
+    y: node.position.y + offset,
+  };
+};
 
 function ProcessFlowSessionPanel() {
   const sdk = getProcessBoxSdk();
@@ -480,6 +503,7 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
     connect,
     reconnectEdge,
     deleteNode,
+    pasteNode,
   } = useStore();
   const readOnlyMode = useStore((state) => state.readOnlyMode);
   const canUndo = useStore((state) => state.canUndo);
@@ -489,10 +513,12 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
   const setShowSunMoonClock = useStore((state) => state.setShowSunMoonClock);
   const undoEditorChange = useStore((state) => state.undoEditorChange);
   const effectiveReadOnlyMode = viewerMode || readOnlyMode;
+  const { screenToFlowPosition } = useReactFlow();
 
   // Edge reconnection ref to track the edge being updated
   const edgeReconnectSuccessful = useRef(true);
   const openedRunSummaryKeyRef = useRef<string | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
@@ -501,9 +527,17 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
   const [showHelp, setShowHelp] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [copiedNode, setCopiedNode] = useState<AppNode | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    screenX: number;
+    screenY: number;
+    flowPosition: { x: number; y: number } | null;
+    targetNodeId: string | null;
+  } | null>(null);
   const [showModelPrimer, setShowModelPrimer] = useState(
     () => !effectiveReadOnlyMode && !localStorage.getItem(MODEL_PRIMER_KEY),
   );
+  const pasteCountRef = useRef(0);
 
   useEffect(() => {
     if (!effectiveReadOnlyMode) return;
@@ -513,7 +547,17 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
     setIsSidebarOpen(false);
     setShowOnboarding(false);
     setShowModelPrimer(false);
+    setCopiedNode(null);
+    setContextMenu(null);
   }, [effectiveReadOnlyMode]);
+
+  const nodesById = useMemo(() => {
+    const next = new Map<string, AppNode>();
+    for (const node of nodes) {
+      next.set(node.id, node as AppNode);
+    }
+    return next;
+  }, [nodes]);
 
   useEffect(() => {
     if (effectiveReadOnlyMode) return;
@@ -555,7 +599,111 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
     setIsAnalyticsOpen(true);
   }, [lastRunSummary]);
 
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const copyNodeToClipboard = useCallback(
+    (nodeId: string | null) => {
+      if (!nodeId) return;
+      const node = nodesById.get(nodeId);
+      if (!node) return;
+      setCopiedNode(cloneNodeSnapshot(node));
+      pasteCountRef.current = 0;
+      showToast('success', `Copied ${getNodeClipboardLabel(node)}.`);
+    },
+    [nodesById],
+  );
+
+  const pasteCopiedNode = useCallback(
+    (position?: { x: number; y: number } | null) => {
+      if (!copiedNode) {
+        showToast('warning', 'Copy a node first.');
+        return;
+      }
+      const targetPosition = position ?? getNextPastePosition(copiedNode, pasteCountRef.current);
+      const nextNodeId = pasteNode(copiedNode, targetPosition);
+      if (!nextNodeId) return;
+      pasteCountRef.current += 1;
+      setSelectedNodeId(nextNodeId);
+      setIsConfigOpen(false);
+      showToast('success', `Pasted ${getNodeClipboardLabel(copiedNode)}.`);
+    },
+    [copiedNode, pasteNode],
+  );
+
+  useEffect(() => {
+    if (effectiveReadOnlyMode) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName?.toLowerCase();
+      const isTypingTarget =
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        tagName === 'select' ||
+        Boolean(target?.isContentEditable);
+
+      if (isTypingTarget) return;
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.shiftKey) return;
+      const selectedText = window.getSelection?.()?.toString()?.trim();
+      if (selectedText) return;
+
+      const key = event.key.toLowerCase();
+      if (key === 'c') {
+        if (!selectedNodeId) return;
+        event.preventDefault();
+        copyNodeToClipboard(selectedNodeId);
+        closeContextMenu();
+        return;
+      }
+
+      if (key === 'v') {
+        if (!copiedNode) return;
+        event.preventDefault();
+        pasteCopiedNode();
+        closeContextMenu();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [closeContextMenu, copiedNode, copyNodeToClipboard, effectiveReadOnlyMode, pasteCopiedNode, selectedNodeId]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (contextMenuRef.current?.contains(event.target as globalThis.Node)) return;
+      closeContextMenu();
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeContextMenu();
+      }
+    };
+
+    const handleWindowChange = () => {
+      closeContextMenu();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleEscape);
+    window.addEventListener('resize', handleWindowChange);
+    window.addEventListener('blur', handleWindowChange);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleEscape);
+      window.removeEventListener('resize', handleWindowChange);
+      window.removeEventListener('blur', handleWindowChange);
+    };
+  }, [closeContextMenu, contextMenu]);
+
   const handleNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
+    closeContextMenu();
     if (effectiveReadOnlyMode) return;
     // Open config for process, start, and end nodes
     if (['processNode', 'startNode', 'endNode'].includes(node.type || '')) {
@@ -563,21 +711,49 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
     } else {
       setSelectedNodeId(null);
     }
-  }, [effectiveReadOnlyMode]);
+  }, [closeContextMenu, effectiveReadOnlyMode]);
 
   const handleNodeDoubleClick = useCallback((event: React.MouseEvent, node: Node) => {
+    closeContextMenu();
     if (effectiveReadOnlyMode) return;
     // Double-click opens config panel directly
     if (['processNode', 'startNode', 'endNode'].includes(node.type || '')) {
       setSelectedNodeId(node.id);
       setIsConfigOpen(true);
     }
-  }, [effectiveReadOnlyMode]);
+  }, [closeContextMenu, effectiveReadOnlyMode]);
 
   const handlePaneClick = useCallback(() => {
+    closeContextMenu();
     setSelectedNodeId(null);
     setIsConfigOpen(false);
-  }, []);
+  }, [closeContextMenu]);
+
+  const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
+    if (effectiveReadOnlyMode) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (['processNode', 'startNode', 'endNode'].includes(node.type || '')) {
+      setSelectedNodeId(node.id);
+    }
+    setContextMenu({
+      screenX: event.clientX,
+      screenY: event.clientY,
+      flowPosition: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+      targetNodeId: node.id,
+    });
+  }, [effectiveReadOnlyMode, screenToFlowPosition]);
+
+  const handlePaneContextMenu = useCallback((event: React.MouseEvent) => {
+    if (effectiveReadOnlyMode) return;
+    event.preventDefault();
+    setContextMenu({
+      screenX: event.clientX,
+      screenY: event.clientY,
+      flowPosition: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+      targetNodeId: null,
+    });
+  }, [effectiveReadOnlyMode, screenToFlowPosition]);
 
   const onNodesDelete = useCallback(
     (deleted: Node[]) => {
@@ -758,6 +934,16 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
         >
           <Info size={15} />
         </button>
+
+        {!effectiveReadOnlyMode ? (
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-2 rounded-xl transition bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700 border-slate-900 border-2 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] backdrop-blur-md active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
+            title="Open Settings"
+          >
+            <Settings size={15} />
+          </button>
+        ) : null}
       </div>
 
       {!effectiveReadOnlyMode ? <ProcessFlowSessionPanel /> : null}
@@ -836,12 +1022,61 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
         <button
           type="button"
           onClick={() => setShowSunMoonClock(true)}
-          className="absolute top-3 right-14 z-10 flex items-center gap-1.5 rounded-full border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-3 py-1.5 text-xs font-medium text-amber-700 shadow-sm transition hover:from-amber-100 hover:to-orange-100 hover:shadow-md"
+          className="absolute top-3 right-14 z-10 flex items-center gap-1.5 rounded-xl border-2 border-slate-900 bg-gradient-to-r from-amber-50 to-orange-50 px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.9)] transition hover:from-amber-100 hover:to-orange-100 hover:text-amber-800 active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(15,23,42,0.9)]"
           title="Show sun / moon clock"
         >
           <CloudSun size={14} />
         </button>
       )}
+
+      {contextMenu && !effectiveReadOnlyMode ? (
+        <div
+          ref={contextMenuRef}
+          className="fixed z-[80] w-[200px] rounded-xl border-2 border-slate-900 bg-white py-1 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]"
+          style={{ top: contextMenu.screenY, left: contextMenu.screenX }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              copyNodeToClipboard(contextMenu.targetNodeId ?? selectedNodeId);
+              closeContextMenu();
+            }}
+            disabled={!contextMenu.targetNodeId && !selectedNodeId}
+            className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition ${
+              contextMenu.targetNodeId || selectedNodeId
+                ? 'font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100'
+                : 'cursor-not-allowed text-slate-300'
+            }`}
+          >
+            <span>Copy</span>
+            <kbd className="text-[10px] font-medium text-slate-400 tracking-wide">{navigator.platform?.includes('Mac') ? '\u2318C' : 'Ctrl+C'}</kbd>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              pasteCopiedNode(contextMenu.flowPosition);
+              closeContextMenu();
+            }}
+            disabled={!copiedNode}
+            className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition ${
+              copiedNode
+                ? 'font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100'
+                : 'cursor-not-allowed text-slate-300'
+            }`}
+          >
+            <span>Paste</span>
+            <kbd className="text-[10px] font-medium text-slate-400 tracking-wide">{navigator.platform?.includes('Mac') ? '\u2318V' : 'Ctrl+V'}</kbd>
+          </button>
+          {copiedNode && (
+            <>
+              <div className="mx-2 my-1 border-t border-slate-100" />
+              <div className="px-3 py-1.5 text-[10px] font-medium text-slate-400 truncate">
+                Clipboard: {getNodeClipboardLabel(copiedNode)}
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
 
       {/* Main Canvas */}
       <div className="absolute inset-0">
@@ -859,7 +1094,9 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
           edgeTypes={edgeTypes}
           onNodeClick={effectiveReadOnlyMode ? undefined : handleNodeClick}
           onNodeDoubleClick={effectiveReadOnlyMode ? undefined : handleNodeDoubleClick}
+          onNodeContextMenu={effectiveReadOnlyMode ? undefined : handleNodeContextMenu}
           onPaneClick={handlePaneClick}
+          onPaneContextMenu={effectiveReadOnlyMode ? undefined : handlePaneContextMenu}
           fitView
           minZoom={0.1}
           maxZoom={4}

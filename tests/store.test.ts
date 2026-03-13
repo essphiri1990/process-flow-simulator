@@ -496,6 +496,42 @@ describe('Store - Node Management', () => {
     expect((annotations[0].data as any).label).toBe('New Annotation');
   });
 
+  it('pasteNode clones a node with a new id, new position, and reset runtime state', () => {
+    setupLinearFlow();
+    useStore.setState((state) => ({
+      nodes: state.nodes.map((node) =>
+        node.id === 'proc-1'
+          ? {
+              ...node,
+              data: {
+                ...(node.data as any),
+                label: 'Copied Step',
+                stats: { processed: 7, failed: 1, maxQueue: 3 },
+              },
+            }
+          : node,
+      ),
+    }));
+
+    const store = useStore.getState();
+    const sourceNode = store.nodes.find((node) => node.id === 'proc-1');
+    expect(sourceNode).toBeDefined();
+
+    const pastedNodeId = store.pasteNode(sourceNode!, { x: 900, y: 720 });
+    const state = useStore.getState();
+    const pastedNode = state.nodes.find((node) => node.id === pastedNodeId);
+
+    expect(pastedNodeId).toBeTruthy();
+    expect(pastedNodeId).not.toBe('proc-1');
+    expect(state.edges).toHaveLength(2);
+    expect(pastedNode).toBeDefined();
+    expect(pastedNode?.type).toBe('processNode');
+    expect(pastedNode?.position).toEqual({ x: 900, y: 720 });
+    expect((pastedNode?.data as any).label).toBe('Copied Step');
+    expect((pastedNode?.data as any).stats).toEqual({ processed: 0, failed: 0, maxQueue: 0 });
+    expect((pastedNode?.data as any).validationError).toBe('No Output Path');
+  });
+
   it('deleteNode removes the node and connected edges', () => {
     setupLinearFlow();
     const store = useStore.getState();
@@ -1727,6 +1763,40 @@ describe('Store - Scenario Loading', () => {
     expect(state.tickCount).toBe(0);
   });
 
+  it('loadScenario resets shared-resource settings for templates without their own pools', () => {
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      sharedCapacityInputMode: 'hours',
+      sharedCapacityValue: 40,
+      resourcePools: [
+        {
+          id: 'default-shared-pool',
+          name: 'Carry Over Team',
+          inputMode: 'hours',
+          capacityValue: 40,
+          avatarId: 'orbit',
+        },
+        {
+          id: 'contractors',
+          name: 'Contractors',
+          inputMode: 'fte',
+          capacityValue: 6,
+          avatarId: 'wrench',
+        },
+      ],
+    } as any);
+
+    useStore.getState().loadScenario('devops');
+
+    const state = useStore.getState();
+    expect(state.capacityMode).toBe('local');
+    expect(state.sharedCapacityInputMode).toBe('fte');
+    expect(state.sharedCapacityValue).toBe(3);
+    expect(state.resourcePools).toHaveLength(1);
+    expect(state.resourcePools[0].id).toBe('default-shared-pool');
+    expect(state.resourcePools[0].name).toBe('Shared Team');
+  });
+
   it('loadScenario("devops") loads the devops scenario', () => {
     useStore.getState().loadScenario('devops');
     const state = useStore.getState();
@@ -1785,6 +1855,42 @@ describe('Store - Scenario Loading', () => {
     expect(state.currentCanvasName).toBe('Complaints Handling Process');
     expect(state.nodes.length).toBe(12); // 10 work/end + 2 annotations
     expect(state.edges.length).toBe(11);
+  });
+
+  it('newCanvas resets shared-resource settings back to defaults', () => {
+    useStore.setState({
+      capacityMode: 'sharedAllocation',
+      sharedCapacityInputMode: 'hours',
+      sharedCapacityValue: 24,
+      resourcePools: [
+        {
+          id: 'default-shared-pool',
+          name: 'Operations',
+          inputMode: 'hours',
+          capacityValue: 24,
+          avatarId: 'orbit',
+        },
+        {
+          id: 'field-team',
+          name: 'Field Team',
+          inputMode: 'fte',
+          capacityValue: 4,
+          avatarId: 'wrench',
+        },
+      ],
+    } as any);
+
+    useStore.getState().newCanvas();
+
+    const state = useStore.getState();
+    expect(state.nodes).toEqual([]);
+    expect(state.edges).toEqual([]);
+    expect(state.capacityMode).toBe('local');
+    expect(state.sharedCapacityInputMode).toBe('fte');
+    expect(state.sharedCapacityValue).toBe(3);
+    expect(state.resourcePools).toHaveLength(1);
+    expect(state.resourcePools[0].id).toBe('default-shared-pool');
+    expect(state.resourcePools[0].name).toBe('Shared Team');
   });
 
   it('loadScenario resets simulation state', () => {

@@ -107,11 +107,11 @@ const SharedResourcesCard: React.FC<SharedResourcesCardProps> = ({ hasConfigPane
       {/* Header */}
       <div className="rounded-t-[14px] border-b-2 border-slate-900 bg-[#ff8fab] px-3 py-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-900">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="whitespace-nowrap text-[10px] font-black uppercase tracking-[0.16em] text-slate-900">
               Resources · Day
             </div>
-            <div className="rounded-full border-2 border-slate-900 bg-white px-2 py-0.5 text-[9px] font-black text-slate-900">
+            <div className="shrink-0 whitespace-nowrap rounded-full border-2 border-slate-900 bg-white px-2 py-0.5 text-[9px] font-black text-slate-900">
               {totalResourcesFte.toFixed(1)} FTE
             </div>
           </div>

@@ -2,7 +2,7 @@ import React, { memo, useRef } from 'react';
 import { Handle, Position, NodeProps, useStore as useReactFlowStore } from 'reactflow';
 import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../types';
 import { useStore } from '../store';
-import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2 } from 'lucide-react';
+import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2, Gauge } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
 import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
 import { computeBudgetUtilization, getLocalCapacityUnits, getNodeCapacityProfile, getNodeSharedBudgetSummary, getResourcePools } from '../capacityModel';
@@ -340,7 +340,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                               : `Rolling 1h average utilisation for this node. Live now: ${liveUtilization.toFixed(0)}%.`
                           }
                         >
-                          <Users size={11} className="text-emerald-500 shrink-0" />
+                          <Gauge size={11} className="text-emerald-500 shrink-0" />
                           <span className="tabular-nums">{rollingUtilization.toFixed(0)}%</span>
                         </span>
                     </div>

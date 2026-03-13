@@ -521,6 +521,7 @@ export interface SimulationState {
   addStartNode: () => void;
   addEndNode: () => void;
   addAnnotation: () => void;
+  pasteNode: (copiedNode: AppNode, position?: { x: number; y: number }) => string | null;
   updateNodeData: (id: string, data: Partial<ProcessNodeData> | Partial<AnnotationNodeData>) => void;
   updateNode: (id: string, node: Partial<AppNode>) => void;
   setItemConfig: (config: Partial<ItemConfig>) => void;
