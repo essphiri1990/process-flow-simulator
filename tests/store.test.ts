@@ -30,7 +30,7 @@ vi.mock('../processBoxSdk', () => ({
 }));
 
 import { useStore } from '../store';
-import { computeLeadMetrics, computeRollingNodeUtilization, NODE_UTILIZATION_ROLLING_WINDOW_TICKS } from '../metrics';
+import { computeLeadMetrics, computeNodeStageMetrics, computeRollingNodeUtilization, NODE_UTILIZATION_ROLLING_WINDOW_TICKS } from '../metrics';
 import { nextMulberry32 } from '../rng';
 import { AUTOSAVE_DRAFT_CANVAS_ID } from '../canvas-storage';
 
@@ -2333,6 +2333,64 @@ describe('Store - Metric alignment with single time base', () => {
     expect(lead).toBe(target.timeActive + target.timeWaiting);
     expect(pce).toBeGreaterThanOrEqual(0);
     expect(pce).toBeLessThanOrEqual(100);
+  });
+
+  it('node stage metrics update when a process node finishes work', () => {
+    useStore.getState().updateNodeData('proc-1', { processingTime: 3, resources: 1, quality: 1 });
+    useStore.getState().addItem('proc-1');
+
+    for (let i = 0; i < 4; i++) {
+      useStore.getState().tick();
+    }
+
+    const state = useStore.getState();
+    const metrics = computeNodeStageMetrics(state.nodeStageMetricsHistoryByNode['proc-1'] || [], {
+      windowSize: state.metricsWindowCompletions,
+      metricsEpoch: state.metricsEpoch,
+    });
+
+    expect(metrics.sampleSize).toBe(1);
+    expect(metrics.avgLeadWorking).toBe(3);
+    expect(metrics.pce).toBe(100);
+  });
+
+  it('failed processing attempts count toward node stage metrics', () => {
+    useStore.getState().updateNodeData('proc-1', { processingTime: 2, resources: 1, quality: 0 });
+    useStore.getState().addItem('proc-1');
+
+    for (let i = 0; i < 3; i++) {
+      useStore.getState().tick();
+    }
+
+    const state = useStore.getState();
+    const failedItem = state.items.find((item) => item.status === ItemStatus.FAILED);
+    const metrics = computeNodeStageMetrics(state.nodeStageMetricsHistoryByNode['proc-1'] || [], {
+      windowSize: state.metricsWindowCompletions,
+      metricsEpoch: state.metricsEpoch,
+    });
+
+    expect(failedItem).toBeDefined();
+    expect(metrics.sampleSize).toBe(1);
+    expect(metrics.avgLeadWorking).toBe(2);
+  });
+
+  it('blocked upstream transfers do not count as downstream stage completions', () => {
+    setupPullFlow();
+    useStore.getState().addItem('downstream');
+    useStore.getState().addItem('upstream');
+
+    useStore.getState().tick();
+    useStore.getState().tick();
+
+    const state = useStore.getState();
+    const downstreamMetrics = computeNodeStageMetrics(state.nodeStageMetricsHistoryByNode.downstream || [], {
+      windowSize: state.metricsWindowCompletions,
+      metricsEpoch: state.metricsEpoch,
+    });
+    const blockedItem = state.items.find((item) => item.currentNodeId === 'upstream' && item.handoffTargetNodeId === 'downstream');
+
+    expect(blockedItem).toBeDefined();
+    expect(downstreamMetrics.sampleSize).toBe(0);
   });
 
   it('clock advances during long processing even when no new arrivals occur', () => {

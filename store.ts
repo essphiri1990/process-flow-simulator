@@ -34,6 +34,7 @@ import {
   KpiTargets,
   KPI_PERIODS,
   NodeUtilizationHistoryByNode,
+  NodeStageCompletionSample,
   PoolUtilizationBucket,
   PoolUtilizationHistoryByPeriod,
   ResourcePool,
@@ -73,6 +74,7 @@ import { SCENARIOS, SCENARIO_NAMES } from './scenarios';
 import {
   buildRunStateReset,
   computeDerivedState,
+  createEmptyNodeStageMetricsHistory,
   createDefaultCapacityState,
   createDefaultWorkingHours,
   createEmptyItemCounts,
@@ -82,6 +84,7 @@ import {
   createEmptySharedNodeBudgetStateByNode,
   createPastedNode,
   createQueuedItem,
+  appendNodeStageCompletionSample,
   DEFAULT_NODE_BATCH_SIZE,
   DEFAULT_NODE_FLOW_MODE,
   DEFAULT_PULL_OPEN_SLOTS_REQUIRED,
@@ -1251,6 +1254,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   periodCompleted: 0,
   kpiHistoryByPeriod: createEmptyKpiHistory(),
   nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
+  nodeStageMetricsHistoryByNode: createEmptyNodeStageMetricsHistory(),
   poolUtilizationHistoryByPeriod: createEmptyPoolUtilizationHistory(),
   sharedNodeBudgetStateByNode: createEmptySharedNodeBudgetStateByNode(),
 
@@ -2592,6 +2596,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         periodCompleted,
         kpiHistoryByPeriod,
         nodeUtilizationHistoryByNode,
+        nodeStageMetricsHistoryByNode,
         poolUtilizationHistoryByPeriod,
         sharedNodeBudgetStateByNode,
         visualTransfers,
@@ -2757,6 +2762,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       let newlyCompleted = 0;
       let newlyCompletedInEpoch = 0;
       let nextKpiHistory = kpiHistoryByPeriod;
+      let nextNodeStageMetricsHistory = nodeStageMetricsHistoryByNode;
       let nextPoolUtilizationHistory = poolUtilizationHistoryByPeriod;
 
       const registerCompletion = (item: ProcessItem) => {
@@ -2783,6 +2789,19 @@ export const useStore = create<SimulationState>((set, get) => ({
           durationMs: getVisualTransferDurationMs(ticksPerSecond),
         };
         pendingVisualTransfers.push(transfer);
+      };
+
+      const recordNodeStageCompletion = (node: AppNode, item: ProcessItem) => {
+        if (node.type !== 'processNode' && node.type !== 'startNode') return;
+        const sample: NodeStageCompletionSample = {
+          nodeId: node.id,
+          completionTick: tickCount,
+          leadTicks: Math.max(0, item.nodeLeadTime),
+          valueAddedTicks: Math.max(0, item.processingDuration),
+          waitingTicks: Math.max(0, item.nodeLeadTime - item.processingDuration),
+          metricsEpoch: item.metricsEpoch,
+        };
+        nextNodeStageMetricsHistory = appendNodeStageCompletionSample(nextNodeStageMetricsHistory, sample);
       };
 
       const canAcceptTransfer = (targetNodeId: string) => {
@@ -2821,6 +2840,46 @@ export const useStore = create<SimulationState>((set, get) => ({
         item.processingDuration = 0;
         item.progress = 100;
         item.terminalNodeId = null;
+      };
+
+      const finalizeNodeAttempt = (
+        item: ProcessItem,
+        node: AppNode,
+        pData: ProcessNodeData,
+        passed: boolean,
+      ) => {
+        recordNodeStageCompletion(node, item);
+
+        if (passed) {
+          const sourceNodeId = node.id;
+          const nextNodeId = getNextNode(node.id, pData.routingWeights);
+          if (nextNodeId) {
+            if (canAcceptTransfer(nextNodeId)) {
+              activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
+              activeWipCounts.set(nextNodeId, (activeWipCounts.get(nextNodeId) || 0) + 1);
+              enqueueVisualTransfer(sourceNodeId, nextNodeId);
+              moveItemToQueuedNode(item, nextNodeId);
+            } else {
+              blockItemAtSource(item, sourceNodeId, nextNodeId);
+            }
+          } else {
+            activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
+            item.status = ItemStatus.COMPLETED;
+            item.currentNodeId = null;
+            item.handoffTargetNodeId = null;
+            item.progress = 100;
+            item.completionTick = tickCount;
+            item.terminalNodeId = node.type === 'endNode' ? node.id : null;
+            registerCompletion(item);
+          }
+        } else {
+          activeWipCounts.set(node.id, Math.max(0, (activeWipCounts.get(node.id) || 0) - 1));
+          item.status = ItemStatus.FAILED;
+          item.currentNodeId = null;
+          item.handoffTargetNodeId = null;
+          item.completionTick = tickCount;
+          item.terminalNodeId = null;
+        }
       };
 
       // Initialize processing counts
@@ -2877,37 +2936,7 @@ export const useStore = create<SimulationState>((set, get) => ({
               if (passed) stats.processed++;
               else stats.failed++;
               nodesUpdates.set(node.id, stats);
-
-              if (passed) {
-                const sourceNodeId = node.id;
-                const nextNodeId = getNextNode(node.id, pData.routingWeights);
-                if (nextNodeId) {
-                  if (canAcceptTransfer(nextNodeId)) {
-                    activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
-                    activeWipCounts.set(nextNodeId, (activeWipCounts.get(nextNodeId) || 0) + 1);
-                    enqueueVisualTransfer(sourceNodeId, nextNodeId);
-                    moveItemToQueuedNode(item, nextNodeId);
-                  } else {
-                    blockItemAtSource(item, sourceNodeId, nextNodeId);
-                  }
-                } else {
-                  activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
-                  item.status = ItemStatus.COMPLETED;
-                  item.currentNodeId = null;
-                  item.handoffTargetNodeId = null;
-                  item.progress = 100;
-                  item.completionTick = tickCount;
-                  item.terminalNodeId = node.type === 'endNode' ? node.id : null;
-                  registerCompletion(item);
-                }
-              } else {
-                activeWipCounts.set(node.id, Math.max(0, (activeWipCounts.get(node.id) || 0) - 1));
-                item.status = ItemStatus.FAILED;
-                item.currentNodeId = null;
-                item.handoffTargetNodeId = null;
-                item.completionTick = tickCount;
-                item.terminalNodeId = null;
-              }
+              finalizeNodeAttempt(item, node, pData, passed);
             }
           }
         }
@@ -3035,41 +3064,12 @@ export const useStore = create<SimulationState>((set, get) => ({
             for (const item of batch) {
               const passed = nextSimulationRandom() <= pData.quality;
               const stats = nodesUpdates.get(node.id) || { processed: 0, failed: 0 };
-
-              if (passed) {
-                const sourceNodeId = node.id;
-                const nextNodeId = getNextNode(node.id, pData.routingWeights);
-                if (nextNodeId) {
-                  if (canAcceptTransfer(nextNodeId)) {
-                    activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
-                    activeWipCounts.set(nextNodeId, (activeWipCounts.get(nextNodeId) || 0) + 1);
-                    enqueueVisualTransfer(sourceNodeId, nextNodeId);
-                    moveItemToQueuedNode(item, nextNodeId);
-                  } else {
-                    blockItemAtSource(item, sourceNodeId, nextNodeId);
-                  }
-                } else {
-                  activeWipCounts.set(sourceNodeId, Math.max(0, (activeWipCounts.get(sourceNodeId) || 0) - 1));
-                  item.status = ItemStatus.COMPLETED;
-                  item.currentNodeId = null;
-                  item.handoffTargetNodeId = null;
-                  item.completionTick = tickCount;
-                  item.terminalNodeId = node.type === 'endNode' ? node.id : null;
-                  registerCompletion(item);
-                }
-                item.progress = 100;
-                stats.processed++;
-              } else {
-                activeWipCounts.set(node.id, Math.max(0, (activeWipCounts.get(node.id) || 0) - 1));
-                item.status = ItemStatus.FAILED;
-                item.currentNodeId = null;
-                item.handoffTargetNodeId = null;
-                item.completionTick = tickCount;
-                item.terminalNodeId = null;
-                item.progress = 100;
-                stats.failed++;
-              }
+              if (passed) stats.processed++;
+              else stats.failed++;
               nodesUpdates.set(node.id, stats);
+
+              finalizeNodeAttempt(item, node, pData, passed);
+              item.progress = 100;
             }
             continue;
           }
@@ -3308,6 +3308,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         demandOpenTicksByNode: nextDemandOpenTicksByNode,
         kpiHistoryByPeriod: nextKpiHistory,
         nodeUtilizationHistoryByNode: nextNodeUtilizationHistory,
+        nodeStageMetricsHistoryByNode: nextNodeStageMetricsHistory,
         poolUtilizationHistoryByPeriod: nextPoolUtilizationHistory,
         sharedNodeBudgetStateByNode: nextSharedNodeBudgetStateByNode,
         runStartedAtMs: effectiveRunStartedAtMs,

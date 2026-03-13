@@ -6,6 +6,8 @@ import {
   ItemCounts,
   ItemStatus,
   KpiHistoryByPeriod,
+  NodeStageCompletionSample,
+  NodeStageMetricsHistoryByNode,
   NodeUtilizationHistoryByNode,
   PoolUtilizationHistoryByPeriod,
   ProcessItem,
@@ -49,6 +51,8 @@ export const createEmptyKpiHistory = (): KpiHistoryByPeriod => ({
 
 export const createEmptyNodeUtilizationHistory = (): NodeUtilizationHistoryByNode => ({});
 
+export const createEmptyNodeStageMetricsHistory = (): NodeStageMetricsHistoryByNode => ({});
+
 export const createEmptyPoolUtilizationHistory = (): PoolUtilizationHistoryByPeriod => ({
   hour: {},
   day: {},
@@ -57,6 +61,59 @@ export const createEmptyPoolUtilizationHistory = (): PoolUtilizationHistoryByPer
 });
 
 export const createEmptySharedNodeBudgetStateByNode = (): SharedNodeBudgetStateByNode => ({});
+
+const MAX_NODE_STAGE_SAMPLES_PER_NODE = 100;
+const MAX_NODE_STAGE_SAMPLES_TOTAL = 2000;
+
+const sortByCompletionTickAscending = (left: NodeStageCompletionSample, right: NodeStageCompletionSample) =>
+  left.completionTick - right.completionTick;
+
+export const appendNodeStageCompletionSample = (
+  history: NodeStageMetricsHistoryByNode,
+  sample: NodeStageCompletionSample,
+): NodeStageMetricsHistoryByNode => {
+  const nextSamples = [...(history[sample.nodeId] || []), sample].sort(sortByCompletionTickAscending);
+  const nextHistory: NodeStageMetricsHistoryByNode = {
+    ...history,
+    [sample.nodeId]:
+      nextSamples.length > MAX_NODE_STAGE_SAMPLES_PER_NODE
+        ? nextSamples.slice(nextSamples.length - MAX_NODE_STAGE_SAMPLES_PER_NODE)
+        : nextSamples,
+  };
+
+  const totalSamples = Object.values(nextHistory).reduce((sum, samples) => sum + samples.length, 0);
+  if (totalSamples <= MAX_NODE_STAGE_SAMPLES_TOTAL) {
+    return nextHistory;
+  }
+
+  const trimmedHistory: NodeStageMetricsHistoryByNode = Object.fromEntries(
+    Object.entries(nextHistory).map(([nodeId, samples]) => [nodeId, [...samples]]),
+  );
+  let overflow = totalSamples - MAX_NODE_STAGE_SAMPLES_TOTAL;
+  while (overflow > 0) {
+    let oldestNodeId: string | null = null;
+    let oldestTick = Infinity;
+
+    for (const [nodeId, samples] of Object.entries(trimmedHistory)) {
+      const oldestSample = samples[0];
+      if (!oldestSample) continue;
+      if (oldestSample.completionTick < oldestTick) {
+        oldestTick = oldestSample.completionTick;
+        oldestNodeId = nodeId;
+      }
+    }
+
+    if (!oldestNodeId) break;
+    trimmedHistory[oldestNodeId].shift();
+    overflow--;
+  }
+
+  return Object.fromEntries(
+    Object.entries(trimmedHistory)
+      .filter(([, samples]) => samples.length > 0)
+      .map(([nodeId, samples]) => [nodeId, samples]),
+  );
+};
 
 export const getNormalizedResourcePools = (
   resourcePools?: ResourcePool[],
@@ -285,6 +342,7 @@ export const buildRunStateReset = () => ({
   periodCompleted: 0,
   kpiHistoryByPeriod: createEmptyKpiHistory(),
   nodeUtilizationHistoryByNode: createEmptyNodeUtilizationHistory(),
+  nodeStageMetricsHistoryByNode: createEmptyNodeStageMetricsHistory(),
   poolUtilizationHistoryByPeriod: createEmptyPoolUtilizationHistory(),
   sharedNodeBudgetStateByNode: createEmptySharedNodeBudgetStateByNode(),
   itemsByNode: new Map<string, ProcessItem[]>(),

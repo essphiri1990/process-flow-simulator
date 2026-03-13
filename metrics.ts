@@ -4,6 +4,7 @@ import {
   ItemStatus,
   KpiHistoryByPeriod,
   KpiPeriod,
+  NodeStageCompletionSample,
   NodeUtilizationHistoryByNode,
   PoolUtilizationHistoryByPeriod,
   ProcessItem,
@@ -21,33 +22,34 @@ export interface MetricsWindowConfig {
 const DEFAULT_COMPLETION_WINDOW = 50;
 export const NODE_UTILIZATION_ROLLING_WINDOW_TICKS = TICKS_PER_HOUR;
 
-const getCompleted = (items: ProcessItem[], metricsEpoch?: number): ProcessItem[] => {
+const getCompleted = (items: ProcessItem[]): ProcessItem[] => {
   return items.filter(
     (it) =>
       it.status === ItemStatus.COMPLETED &&
       it.completionTick !== null &&
-      it.terminalNodeId !== null &&
-      (metricsEpoch === undefined || it.metricsEpoch === metricsEpoch)
+      it.terminalNodeId !== null
   );
 };
 
-const getCompletionWindow = (items: ProcessItem[], windowSize: number, metricsEpoch?: number): ProcessItem[] => {
-  const completed = getCompleted(items, metricsEpoch);
-  completed.sort((a, b) => (b.completionTick || 0) - (a.completionTick || 0));
-  return completed.slice(0, windowSize);
-};
-
-const getCompletionWindowWithFallback = (
-  items: ProcessItem[],
+const getCompletionWindowWithFallback = <T>(
+  samples: T[],
   windowSize: number,
   metricsEpoch: number | undefined,
-  minSamples: number
+  minSamples: number,
+  getCompletionTick: (sample: T) => number,
+  getMetricsEpoch: (sample: T) => number,
 ) => {
-  const scoped = getCompletionWindow(items, windowSize, metricsEpoch);
+  const getWindow = (scopeMetricsEpoch: number | undefined) =>
+    [...samples]
+      .filter((sample) => scopeMetricsEpoch === undefined || getMetricsEpoch(sample) === scopeMetricsEpoch)
+      .sort((left, right) => getCompletionTick(right) - getCompletionTick(left))
+      .slice(0, windowSize);
+
+  const scoped = getWindow(metricsEpoch);
   if (metricsEpoch === undefined || scoped.length >= minSamples) {
     return { completions: scoped, usedFallback: false };
   }
-  const fallback = getCompletionWindow(items, windowSize, undefined);
+  const fallback = getWindow(undefined);
   return { completions: fallback, usedFallback: fallback.length > 0 };
 };
 
@@ -78,8 +80,23 @@ export const computeLeadMetrics = (
   config: MetricsWindowConfig = {}
 ): CompletionMetrics => {
   const windowSize = config.windowSize ?? DEFAULT_COMPLETION_WINDOW;
-  const { completions: completed } = getCompletionWindowWithFallback(items, windowSize, config.metricsEpoch, 1);
-  const { completions: throughputCompleted } = getCompletionWindowWithFallback(items, windowSize, config.metricsEpoch, 2);
+  const completedItems = getCompleted(items);
+  const { completions: completed } = getCompletionWindowWithFallback(
+    completedItems,
+    windowSize,
+    config.metricsEpoch,
+    1,
+    (item) => item.completionTick || 0,
+    (item) => item.metricsEpoch,
+  );
+  const { completions: throughputCompleted } = getCompletionWindowWithFallback(
+    completedItems,
+    windowSize,
+    config.metricsEpoch,
+    2,
+    (item) => item.completionTick || 0,
+    (item) => item.metricsEpoch,
+  );
   let totalLeadWorking = 0;
   let totalLeadElapsed = 0;
   let totalClosed = 0;
@@ -119,7 +136,15 @@ export const computeLeadMetrics = (
 
 export const computeThroughputFromCompletions = (items: ProcessItem[], config: MetricsWindowConfig = {}) => {
   const windowSize = config.windowSize ?? DEFAULT_COMPLETION_WINDOW;
-  const { completions: completed } = getCompletionWindowWithFallback(items, windowSize, config.metricsEpoch, 2);
+  const completedItems = getCompleted(items);
+  const { completions: completed } = getCompletionWindowWithFallback(
+    completedItems,
+    windowSize,
+    config.metricsEpoch,
+    2,
+    (item) => item.completionTick || 0,
+    (item) => item.metricsEpoch,
+  );
   const sampleSize = completed.length;
 
   if (sampleSize < 2) {
@@ -144,6 +169,55 @@ export const computeThroughputFromCompletions = (items: ProcessItem[], config: M
     windowSize,
     spanTicks: workingThroughput.spanTicks,
     spanTicksElapsed: elapsedThroughput.spanTicks
+  };
+};
+
+export const computeNodeStageMetrics = (
+  samples: NodeStageCompletionSample[],
+  config: MetricsWindowConfig = {}
+): CompletionMetrics => {
+  const windowSize = config.windowSize ?? DEFAULT_COMPLETION_WINDOW;
+  const { completions: completed } = getCompletionWindowWithFallback(
+    samples,
+    windowSize,
+    config.metricsEpoch,
+    1,
+    (sample) => sample.completionTick,
+    (sample) => sample.metricsEpoch,
+  );
+  const { completions: throughputSamples } = getCompletionWindowWithFallback(
+    samples,
+    windowSize,
+    config.metricsEpoch,
+    2,
+    (sample) => sample.completionTick,
+    (sample) => sample.metricsEpoch,
+  );
+
+  let totalLeadWorking = 0;
+  let totalVAT = 0;
+
+  for (const sample of completed) {
+    totalLeadWorking += Math.max(0, sample.leadTicks);
+    totalVAT += Math.max(0, sample.valueAddedTicks);
+  }
+
+  const sampleSize = completed.length;
+  const avgLeadWorking = sampleSize > 0 ? totalLeadWorking / sampleSize : 0;
+  const avgVAT = sampleSize > 0 ? totalVAT / sampleSize : 0;
+  const pce = avgLeadWorking > 0 ? (avgVAT / avgLeadWorking) * 100 : 0;
+  const throughput = computeThroughputPerHour(throughputSamples.map((sample) => sample.completionTick));
+
+  return {
+    avgLeadWorking,
+    avgLeadElapsed: avgLeadWorking,
+    avgClosed: 0,
+    avgVAT,
+    pce,
+    throughputWorkingPerHour: throughput.throughput,
+    throughputElapsedPerHour: throughput.throughput,
+    sampleSize,
+    windowSize,
   };
 };
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  computeNodeStageMetrics,
   computeOverallUtilization,
   computeRollingNodeUtilization,
   computeThroughputFromCompletions,
@@ -127,5 +128,22 @@ describe('metrics throughput accuracy', () => {
     );
 
     expect(utilisation).toBe(70);
+  });
+
+  it('computes node-stage metrics from the recent completion window and falls back across epochs', () => {
+    const samples = [
+      { nodeId: 'proc-1', completionTick: 10, leadTicks: 20, valueAddedTicks: 10, waitingTicks: 10, metricsEpoch: 0 },
+      { nodeId: 'proc-1', completionTick: 20, leadTicks: 40, valueAddedTicks: 20, waitingTicks: 20, metricsEpoch: 0 },
+      { nodeId: 'proc-1', completionTick: 30, leadTicks: 30, valueAddedTicks: 15, waitingTicks: 15, metricsEpoch: 1 },
+    ];
+
+    const currentEpoch = computeNodeStageMetrics(samples, { windowSize: 2, metricsEpoch: 1 });
+    expect(currentEpoch.sampleSize).toBe(1);
+    expect(currentEpoch.avgLeadWorking).toBe(30);
+    expect(currentEpoch.pce).toBe(50);
+
+    const fallback = computeNodeStageMetrics(samples, { windowSize: 2, metricsEpoch: 2 });
+    expect(fallback.sampleSize).toBe(2);
+    expect(fallback.avgLeadWorking).toBe(35);
   });
 });

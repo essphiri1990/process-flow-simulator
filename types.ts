@@ -209,6 +209,17 @@ export interface ResourceUtilizationSample {
 
 export type NodeUtilizationHistoryByNode = Record<string, ResourceUtilizationSample[]>;
 
+export interface NodeStageCompletionSample {
+  nodeId: string;
+  completionTick: number;
+  leadTicks: number;
+  valueAddedTicks: number;
+  waitingTicks: number;
+  metricsEpoch: number;
+}
+
+export type NodeStageMetricsHistoryByNode = Record<string, NodeStageCompletionSample[]>;
+
 export interface SharedNodeBudgetState {
   budgetDayKey: number | null;
   dailyBudgetMinutes: number;
@@ -471,6 +482,7 @@ export interface SimulationState {
   periodCompleted: number;
   kpiHistoryByPeriod: KpiHistoryByPeriod;
   nodeUtilizationHistoryByNode: NodeUtilizationHistoryByNode;
+  nodeStageMetricsHistoryByNode: NodeStageMetricsHistoryByNode;
   poolUtilizationHistoryByPeriod: PoolUtilizationHistoryByPeriod;
   sharedNodeBudgetStateByNode: SharedNodeBudgetStateByNode;
 

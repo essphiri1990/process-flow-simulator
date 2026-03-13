@@ -1125,9 +1125,13 @@ function Flow({ onBackToGallery = null, viewerMode = false, sharedSimMeta = null
         selectedNodeId={selectedNodeId}
         onEditNode={() => setIsConfigOpen(true)}
         onOpenAnalytics={() => setIsAnalyticsOpen(true)}
+        onClearSelection={() => setSelectedNodeId(null)}
       />
 
-      <SharedResourcesCard hasConfigPanel={isConfigOpen && Boolean(selectedNodeId)} />
+      <SharedResourcesCard
+        hasConfigPanel={isConfigOpen && Boolean(selectedNodeId)}
+        selectedNodeId={selectedNodeId}
+      />
 
 
       {isConfigOpen && selectedNodeId && (

@@ -1,12 +1,14 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { DURATION_PRESETS, SPEED_PRESETS, TICKS_PER_HOUR, TICKS_PER_WORKDAY, TICKS_PER_WEEK } from '../types';
-import { Play, Pause, RotateCcw, Plus, Activity, Settings2, Zap, ZapOff, SkipForward, ChevronDown } from 'lucide-react';
+import { DURATION_PRESETS, ItemStatus, ProcessNodeData, SPEED_PRESETS, TICKS_PER_HOUR, TICKS_PER_WORKDAY, TICKS_PER_WEEK } from '../types';
+import { Play, Pause, RotateCcw, Plus, Activity, Settings2, SkipForward, ChevronDown, X, Clock } from 'lucide-react';
 import { computeSchedule } from '../scheduler';
 import {
   computeLeadMetrics,
+  computeNodeStageMetrics,
   formatCompletionWindowLabel,
   getLatestKpiUtilizationAverage,
+  getRollingNodeUtilization,
 } from '../metrics';
 import { computeOverallBudgetUtilization, computeOverallLiveUtilization } from '../capacityModel';
 
@@ -14,6 +16,7 @@ interface ControlsProps {
   selectedNodeId: string | null;
   onEditNode: () => void;
   onOpenAnalytics: () => void;
+  onClearSelection: () => void;
 }
 
 // Format elapsed time based on tick count
@@ -42,7 +45,69 @@ const METRICS_WINDOW_PRESETS = [
   { label: '100', count: 100 }
 ];
 
-const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenAnalytics }) => {
+const DurationDropdown: React.FC<{
+  value: string;
+  onChange: (key: string) => void;
+  disabled?: boolean;
+}> = ({ value, onChange, disabled }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selectedPreset = DURATION_PRESETS[value];
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setIsOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => !disabled && setIsOpen(!isOpen)}
+        disabled={disabled}
+        className={`flex items-center gap-1.5 h-9 rounded-lg px-2.5 text-xs font-medium transition-all ${
+          disabled
+            ? 'bg-slate-50 border border-slate-200 text-slate-400 cursor-not-allowed'
+            : 'bg-slate-50 border border-slate-200 text-slate-700 cursor-pointer hover:bg-slate-100 hover:border-slate-300'
+        }`}
+        title="Simulation duration"
+      >
+        <Clock size={12} className="text-slate-400 shrink-0" />
+        <span>{selectedPreset?.label ?? value}</span>
+        <ChevronDown size={11} className={`text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute bottom-full mb-2 left-0 w-[220px] rounded-xl border-2 border-slate-900 bg-white py-1.5 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)] z-[100]">
+          <div className="px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+            Simulation Period
+          </div>
+          {Object.entries(DURATION_PRESETS).map(([key, preset]) => (
+            <button
+              key={key}
+              onClick={() => { onChange(key); setIsOpen(false); }}
+              className={`w-full flex items-center justify-between px-3 py-2 text-xs transition-all ${
+                key === value
+                  ? 'bg-slate-900 text-white font-bold'
+                  : 'text-slate-600 font-medium hover:bg-slate-50'
+              }`}
+            >
+              <span>{preset.label}</span>
+              {key === value && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenAnalytics, onClearSelection }) => {
   const {
     isRunning,
     startSimulation,
@@ -57,8 +122,6 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
     demandMode,
     demandUnit,
     itemCounts,
-    autoInjectionEnabled,
-    toggleAutoInjection,
     // New real-time simulation state
     durationPreset,
     speedPreset,
@@ -73,6 +136,8 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
   const nodes = useStore((state) => state.nodes);
   const itemsByNode = useStore((state) => state.itemsByNode);
   const kpiHistoryByPeriod = useStore((state) => state.kpiHistoryByPeriod);
+  const nodeStageMetricsHistoryByNode = useStore((state) => state.nodeStageMetricsHistoryByNode);
+  const nodeUtilizationHistoryByNode = useStore((state) => state.nodeUtilizationHistoryByNode);
   const capacityMode = useStore((state) => state.capacityMode);
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
@@ -85,19 +150,57 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
       metricsEpoch
     });
   }, [items, metricsWindowCompletions, metricsEpoch]);
-
-  const lowSample = vsmMetrics.sampleSize < 5;
-  const hasLeadSample = vsmMetrics.sampleSize >= 1;
-  const hasPceSample = vsmMetrics.sampleSize >= 1;
-  const hasThroughputSample = vsmMetrics.sampleSize >= 2;
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) || null,
+    [nodes, selectedNodeId],
+  );
+  const selectedWorkNode = useMemo(
+    () =>
+      selectedNode && (selectedNode.type === 'startNode' || selectedNode.type === 'processNode')
+        ? selectedNode
+        : null,
+    [selectedNode],
+  );
+  const selectedWorkNodeData = selectedWorkNode ? (selectedWorkNode.data as ProcessNodeData) : null;
+  const selectedNodeItems = useMemo(
+    () => (selectedWorkNode ? itemsByNode.get(selectedWorkNode.id) || [] : []),
+    [itemsByNode, selectedWorkNode],
+  );
+  const selectedNodeQueued = useMemo(
+    () => selectedNodeItems.filter((item) => item.status === ItemStatus.QUEUED).length,
+    [selectedNodeItems],
+  );
+  const selectedNodeProcessing = useMemo(
+    () => selectedNodeItems.filter((item) => item.status === ItemStatus.PROCESSING).length,
+    [selectedNodeItems],
+  );
+  const selectedNodeMetrics = useMemo(
+    () =>
+      selectedWorkNode
+        ? computeNodeStageMetrics(nodeStageMetricsHistoryByNode[selectedWorkNode.id] || [], {
+            windowSize: metricsWindowCompletions,
+            metricsEpoch,
+          })
+        : null,
+    [metricsEpoch, metricsWindowCompletions, nodeStageMetricsHistoryByNode, selectedWorkNode],
+  );
+  const activeMetrics = selectedNodeMetrics || vsmMetrics;
+  const activeCount = selectedWorkNode ? selectedNodeItems.length : itemCounts.wip;
+  const focusLabel = selectedWorkNodeData ? `Node: ${selectedWorkNodeData.label}` : 'Global';
+  const lowSample = activeMetrics.sampleSize < 5;
+  const hasLeadSample = activeMetrics.sampleSize >= 1;
+  const hasPceSample = activeMetrics.sampleSize >= 1;
+  const hasThroughputSample = activeMetrics.sampleSize >= 2;
   const windowLabel = formatCompletionWindowLabel(metricsWindowCompletions);
   const metricsTooltip = lowSample
-    ? `Low sample size (n=${vsmMetrics.sampleSize}). Window: ${windowLabel}`
-    : `n=${vsmMetrics.sampleSize}. Window: ${windowLabel}`;
+    ? `${focusLabel}. Low sample size (n=${activeMetrics.sampleSize}). Window: ${windowLabel}`
+    : `${focusLabel}. n=${activeMetrics.sampleSize}. Window: ${windowLabel}`;
   const throughputTooltip = hasThroughputSample
-    ? `Throughput (Working): ${vsmMetrics.throughputWorkingPerHour.toFixed(1)}/h. ${metricsTooltip}`
+    ? `Throughput: ${activeMetrics.throughputWorkingPerHour.toFixed(1)}/h. ${metricsTooltip}`
     : `Need at least 2 completions for throughput. ${metricsTooltip}`;
-  const wipTooltip = `Q ${itemCounts.queued} · P ${itemCounts.processing} · S ${itemCounts.stuck}`;
+  const wipTooltip = selectedWorkNodeData
+    ? `Node: ${selectedWorkNodeData.label} · Q ${selectedNodeQueued} · P ${selectedNodeProcessing}`
+    : `Q ${itemCounts.queued} · P ${itemCounts.processing} · S ${itemCounts.stuck}`;
 
   // Format time as human-readable mixed units (e.g. "2h 15m", "1d 3h")
   const formatLeadTime = (ticks: number): string => {
@@ -171,8 +274,6 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
     };
   }, [isRunning, ticksPerSecond, tick]);
 
-  // Performance: Use pre-computed counts instead of filtering
-  const activeCount = itemCounts.wip;
   const overallUtilization = useMemo(
     () =>
       capacityMode === 'sharedAllocation'
@@ -206,12 +307,41 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
     () => getLatestKpiUtilizationAverage(kpiHistoryByPeriod, demandUnit),
     [demandUnit, kpiHistoryByPeriod],
   );
+  const selectedNodeUtilization = useMemo(
+    () => (selectedWorkNode ? getRollingNodeUtilization(nodeUtilizationHistoryByNode, selectedWorkNode.id) : 0),
+    [nodeUtilizationHistoryByNode, selectedWorkNode],
+  );
+  const displayedUtilization = selectedWorkNode ? selectedNodeUtilization : periodAverageUtilization;
+  const utilizationTooltip = selectedWorkNodeData
+    ? `Rolling utilisation for node ${selectedWorkNodeData.label} across the recent simulated hour.`
+    : capacityMode === 'sharedAllocation'
+      ? `Latest ${demandUnit} average resource utilisation across start and process nodes. Today budget used: ${overallUtilization.toFixed(0)}%.`
+      : `Latest ${demandUnit} average resource utilisation across start and process nodes. Live now: ${overallUtilization.toFixed(0)}%.`;
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white border-2 border-slate-900 p-1.5 rounded-2xl z-50 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
+    <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
+      <div className="relative flex items-center gap-1 rounded-2xl border-2 border-slate-900 bg-white p-1.5 shadow-[4px_4px_0px_0px_rgba(15,23,42,0.9)]">
+        {selectedWorkNodeData ? (
+          <div className="absolute -top-5 right-28 z-10 max-w-[220px]">
+            <div className="inline-flex items-center gap-1.5 rounded-xl border-2 border-slate-900 bg-[#d9f99d] px-2 py-1 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.9)]">
+              <span className="max-w-[180px] truncate text-[11px] font-black text-slate-900">
+                {`Stage: ${selectedWorkNodeData.label}`}
+              </span>
+              <button
+                type="button"
+                onClick={onClearSelection}
+                className="rounded-full border-2 border-slate-900 bg-white p-0.5 text-slate-900 transition hover:bg-slate-100"
+                title="Return to global metrics"
+                aria-label="Return to global metrics"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          </div>
+        ) : null}
 
-      {/* Playback Controls */}
-      <div className="flex items-center gap-1 px-1">
+        {/* Playback Controls */}
+        <div className="flex items-center gap-1 px-1">
         <button
             onClick={isRunning ? pauseSimulation : startSimulation}
             className={`h-9 w-20 justify-center text-white rounded-xl transition-all flex items-center gap-1.5 font-semibold text-sm border-2 active:translate-y-[1px] active:shadow-none ${
@@ -237,31 +367,19 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
           title="Reset Data (Keep Layout)"
         >
           <RotateCcw size={15} />
-        </button>
-      </div>
-
-      <div className="w-px h-7 bg-slate-200" />
-
-      {/* Simulation Settings */}
-      <div className="flex items-center gap-2 px-2">
-        {/* Duration */}
-        <div className="relative" title="Simulation duration">
-          <select
-            value={durationPreset}
-            onChange={(e) => setDurationPreset(e.target.value)}
-            disabled={demandMode === 'target' || readOnlyMode}
-            className={`appearance-none h-9 border rounded-lg pl-2.5 pr-7 text-xs font-medium transition-all focus:outline-none focus:ring-2 focus:ring-blue-400 ${
-              demandMode === 'target' || readOnlyMode
-                ? 'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed'
-                : 'bg-slate-50 border-slate-200 text-slate-700 cursor-pointer hover:bg-slate-100 hover:border-slate-300'
-            }`}
-          >
-            {Object.entries(DURATION_PRESETS).map(([key, preset]) => (
-              <option key={key} value={key}>{preset.label}</option>
-            ))}
-          </select>
-          <ChevronDown size={11} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          </button>
         </div>
+
+        <div className="w-px h-7 bg-slate-200" />
+
+        {/* Simulation Settings */}
+        <div className="flex items-center gap-2 px-2">
+        {/* Duration */}
+        <DurationDropdown
+          value={durationPreset}
+          onChange={setDurationPreset}
+          disabled={demandMode === 'target' || readOnlyMode}
+        />
 
         {/* Speed */}
         <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg overflow-hidden h-9">
@@ -295,32 +413,12 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
           <ChevronDown size={11} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         </div>
 
-        {/* Auto Feed */}
-        <button
-          onClick={toggleAutoInjection}
-          disabled={demandMode === 'target' || readOnlyMode}
-          className={`h-9 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-medium transition-all border ${
-            autoInjectionEnabled
-              ? 'bg-purple-50 border-purple-200 text-purple-700'
-              : 'bg-slate-50 border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-100'
-          }`}
-          title={
-            readOnlyMode
-              ? 'Auto feed is locked in read-only mode'
-              : demandMode === 'target'
-                ? 'Auto feed disabled in demand mode'
-                : 'Auto-generate items at start nodes'
-          }
-        >
-          {autoInjectionEnabled ? <Zap size={13} fill="currentColor" /> : <ZapOff size={13} />}
-          <span className="hidden xl:inline">Feed</span>
-        </button>
       </div>
 
-      <div className="w-px h-7 bg-slate-200" />
+        <div className="w-px h-7 bg-slate-200" />
 
-      {/* Metrics */}
-      <div className="flex items-center gap-3 px-2" title={metricsTooltip}>
+        {/* Metrics */}
+        <div className="flex items-center gap-3 px-2" title={metricsTooltip}>
         <div className="flex flex-col items-center w-[52px]">
            <span className="text-[9px] text-slate-400 uppercase font-semibold tracking-wide leading-none mb-1">Time</span>
            <span className="font-mono font-bold text-slate-800 text-xs leading-none">{formatElapsedTime(displayTickCount)}</span>
@@ -335,16 +433,16 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
              className={`font-mono font-bold text-xs leading-none ${hasPceSample ? 'text-slate-800' : 'text-slate-300'}`}
              title={metricsTooltip}
            >
-             {vsmMetrics.pce.toFixed(0)}%
+             {activeMetrics.pce.toFixed(0)}%
            </span>
         </div>
         <div className="flex flex-col items-center w-[44px]">
            <span className="text-[9px] text-amber-500 uppercase font-semibold tracking-wide leading-none mb-1">Lead</span>
            <span
              className={`font-mono font-bold text-xs leading-none whitespace-nowrap ${hasLeadSample ? 'text-slate-800' : 'text-slate-300'}`}
-             title={`Lead (Working): ${formatLeadTime(vsmMetrics.avgLeadWorking)}. ${metricsTooltip}`}
+             title={`Lead: ${formatLeadTime(activeMetrics.avgLeadWorking)}. ${metricsTooltip}`}
            >
-             {formatLeadTime(vsmMetrics.avgLeadWorking)}
+             {formatLeadTime(activeMetrics.avgLeadWorking)}
            </span>
         </div>
         <div className="flex flex-col items-center w-[44px]">
@@ -353,28 +451,24 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
              className={`font-mono font-bold text-xs leading-none ${hasThroughputSample ? 'text-slate-800' : 'text-slate-300'}`}
              title={throughputTooltip}
            >
-             {vsmMetrics.throughputWorkingPerHour.toFixed(1)}/h
+             {activeMetrics.throughputWorkingPerHour.toFixed(1)}/h
            </span>
         </div>
         <div className="flex flex-col items-center w-[40px]">
            <span className="text-[9px] text-teal-500 uppercase font-semibold tracking-wide leading-none mb-1">Util</span>
            <span
              className="font-mono font-bold text-xs leading-none text-slate-800"
-             title={
-               capacityMode === 'sharedAllocation'
-                 ? `Latest ${demandUnit} average resource utilisation across start and process nodes. Today budget used: ${overallUtilization.toFixed(0)}%.`
-                 : `Latest ${demandUnit} average resource utilisation across start and process nodes. Live now: ${overallUtilization.toFixed(0)}%.`
-             }
+             title={utilizationTooltip}
            >
-             {periodAverageUtilization.toFixed(0)}%
+             {displayedUtilization.toFixed(0)}%
            </span>
         </div>
-      </div>
+        </div>
 
-      <div className="w-px h-7 bg-slate-200" />
+        <div className="w-px h-7 bg-slate-200" />
 
-      {/* Actions */}
-      <div className="flex items-center gap-0.5 px-1">
+        {/* Actions */}
+        <div className="flex items-center gap-0.5 px-1">
          <button
             onClick={() => selectedNodeId && addItem(selectedNodeId)}
             disabled={!selectedNodeId || readOnlyMode}
@@ -408,8 +502,8 @@ const Controls: React.FC<ControlsProps> = ({ selectedNodeId, onEditNode, onOpenA
           >
             <Settings2 size={16} />
           </button>
+        </div>
       </div>
-
     </div>
   );
 };

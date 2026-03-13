@@ -13,6 +13,8 @@ export const resetUiStore = (overrides: PartialStoreState = {}) => {
     throughput: 0,
     metricsEpoch: 0,
     metricsWindowCompletions: 50,
+    nodeStageMetricsHistoryByNode: {},
+    nodeUtilizationHistoryByNode: {},
     items: [],
     itemCounts: {
       wip: 0,
@@ -22,6 +24,7 @@ export const resetUiStore = (overrides: PartialStoreState = {}) => {
       processing: 0,
       stuck: 0,
     },
+    showSharedResourcesCard: true,
     ...overrides,
   });
 };
