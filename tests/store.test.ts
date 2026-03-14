@@ -42,6 +42,7 @@ const resetStore = () => {
     capacityMode: 'local',
     sharedCapacityInputMode: 'fte',
     sharedCapacityValue: 3,
+    assetPools: [],
     blockedCountsByTarget: new Map(),
   });
 };
@@ -876,6 +877,128 @@ describe('Store - Tick Engine', () => {
 
     const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
     expect((node!.data as any).resourcePoolId).toBe('default-shared-pool');
+  });
+
+  it('limits processing by equipment units when a node uses an equipment pool', () => {
+    useStore.setState({
+      assetPools: [{ id: 'chairs', name: 'Chairs', units: 5 }],
+    });
+    useStore.getState().updateNodeData('proc-1', {
+      resources: 7,
+      processingTime: 4,
+      assetPoolId: 'chairs',
+    });
+
+    for (let i = 0; i < 7; i++) {
+      useStore.getState().addItem('proc-1');
+    }
+
+    useStore.getState().tick();
+
+    const processing = useStore.getState().items.filter(
+      (item) => item.currentNodeId === 'proc-1' && item.status === ItemStatus.PROCESSING,
+    );
+    const queued = useStore.getState().items.filter(
+      (item) => item.currentNodeId === 'proc-1' && item.status === ItemStatus.QUEUED,
+    );
+
+    expect(processing).toHaveLength(5);
+    expect(queued).toHaveLength(2);
+  });
+
+  it('shares equipment units across nodes that use the same pool', () => {
+    useStore.setState({
+      nodes: [
+        {
+          id: 'left',
+          type: 'processNode',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Braids',
+            processingTime: 5,
+            resources: 2,
+            quality: 1,
+            variability: 0,
+            stats: { processed: 0, failed: 0, maxQueue: 0 },
+            routingWeights: {},
+            assetPoolId: 'chairs',
+          },
+        },
+        {
+          id: 'right',
+          type: 'processNode',
+          position: { x: 240, y: 0 },
+          data: {
+            label: 'Locks',
+            processingTime: 5,
+            resources: 2,
+            quality: 1,
+            variability: 0,
+            stats: { processed: 0, failed: 0, maxQueue: 0 },
+            routingWeights: {},
+            assetPoolId: 'chairs',
+          },
+        },
+      ] as any,
+      edges: [],
+      items: [],
+      itemsByNode: new Map(),
+      blockedCountsByTarget: new Map(),
+      itemCounts: { wip: 0, completed: 0, failed: 0, queued: 0, processing: 0, stuck: 0 },
+      assetPools: [{ id: 'chairs', name: 'Chairs', units: 3 }],
+    });
+
+    useStore.getState().addItem('left');
+    useStore.getState().addItem('left');
+    useStore.getState().addItem('right');
+    useStore.getState().addItem('right');
+
+    useStore.getState().tick();
+
+    const processing = useStore.getState().items.filter((item) => item.status === ItemStatus.PROCESSING);
+    const leftProcessing = processing.filter((item) => item.currentNodeId === 'left');
+    const rightProcessing = processing.filter((item) => item.currentNodeId === 'right');
+
+    expect(processing).toHaveLength(3);
+    expect(leftProcessing).toHaveLength(2);
+    expect(rightProcessing).toHaveLength(1);
+  });
+
+  it('holds a batch when the equipment pool cannot satisfy the full batch size', () => {
+    useStore.setState({
+      assetPools: [{ id: 'chairs', name: 'Chairs', units: 2 }],
+    });
+    useStore.getState().updateNodeData('proc-1', {
+      resources: 4,
+      batchSize: 3,
+      processingTime: 4,
+      assetPoolId: 'chairs',
+    });
+
+    useStore.getState().addItem('proc-1');
+    useStore.getState().addItem('proc-1');
+    useStore.getState().addItem('proc-1');
+
+    useStore.getState().tick();
+
+    const processing = useStore.getState().items.filter((item) => item.status === ItemStatus.PROCESSING);
+    const queued = useStore.getState().items.filter((item) => item.status === ItemStatus.QUEUED);
+
+    expect(processing).toHaveLength(0);
+    expect(queued).toHaveLength(3);
+  });
+
+  it('deleting an equipment pool clears asset assignments on nodes', () => {
+    useStore.getState().addAssetPool();
+    const addedPoolId = useStore.getState().assetPools[0].id;
+
+    useStore.getState().updateNodeData('proc-1', {
+      assetPoolId: addedPoolId,
+    });
+    useStore.getState().deleteAssetPool(addedPoolId);
+
+    const node = useStore.getState().nodes.find((entry) => entry.id === 'proc-1');
+    expect((node!.data as any).assetPoolId).toBeUndefined();
   });
 
   it('updates the default pool capacity through the legacy shared-capacity fields', () => {

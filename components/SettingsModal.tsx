@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { X, User, Box, FileText, Circle, Square, Clock, Palette, ChevronDown, Activity, RefreshCw, Plus, Trash2, Users } from 'lucide-react';
+import { X, User, Box, FileText, Circle, Square, Clock, Palette, ChevronDown, Activity, RefreshCw, Plus, Trash2, Users, Wrench } from 'lucide-react';
 import { NODE_HEADER_COLORS, DEMAND_UNIT_LABELS, DemandUnit } from '../types';
 import {
   DEFAULT_RESOURCE_POOL_ID,
+  getAssetPools,
   getAllSharedAllocationTotals,
   getResourcePools,
   WORKDAY_HOURS,
@@ -41,10 +42,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
   const resourcePools = useStore((state) => state.resourcePools);
+  const assetPools = useStore((state) => state.assetPools);
   const setCapacityMode = useStore((state) => state.setCapacityMode);
   const addResourcePool = useStore((state) => state.addResourcePool);
   const updateResourcePool = useStore((state) => state.updateResourcePool);
   const deleteResourcePool = useStore((state) => state.deleteResourcePool);
+  const addAssetPool = useStore((state) => state.addAssetPool);
+  const updateAssetPool = useStore((state) => state.updateAssetPool);
+  const deleteAssetPool = useStore((state) => state.deleteAssetPool);
   const demandArrivalsGenerated = useStore((state) => state.demandArrivalsGenerated);
   const simulationSeed = useStore((state) => state.simulationSeed);
   const setSimulationSeed = useStore((state) => state.setSimulationSeed);
@@ -71,6 +76,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     () => getResourcePools({ resourcePools, sharedCapacityInputMode, sharedCapacityValue }),
     [resourcePools, sharedCapacityInputMode, sharedCapacityValue],
   );
+  const normalizedAssetPools = useMemo(() => getAssetPools(assetPools), [assetPools]);
   const poolAllocationTotals = useMemo(
     () =>
       getAllSharedAllocationTotals(nodes as any, {
@@ -85,8 +91,24 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     () => new Map(poolAllocationTotals.map((totals) => [totals.resourcePoolId, totals])),
     [poolAllocationTotals],
   );
+  const assetAssignmentsById = useMemo(
+    () =>
+      new Map(
+        normalizedAssetPools.map((pool) => [
+          pool.id,
+          nodes.filter(
+            (node) =>
+              (node.type === 'processNode' || node.type === 'startNode') &&
+              (node.data as any).assetPoolId === pool.id,
+          ).length,
+        ]),
+      ),
+    [nodes, normalizedAssetPools],
+  );
   const [poolNameDrafts, setPoolNameDrafts] = useState<Record<string, string>>({});
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
+  const [assetPoolNameDrafts, setAssetPoolNameDrafts] = useState<Record<string, string>>({});
+  const [editingAssetPoolId, setEditingAssetPoolId] = useState<string | null>(null);
 
   useEffect(() => {
     setPoolNameDrafts((current) =>
@@ -99,11 +121,29 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     );
   }, [editingPoolId, normalizedResourcePools]);
 
+  useEffect(() => {
+    setAssetPoolNameDrafts((current) =>
+      Object.fromEntries(
+        normalizedAssetPools.map((pool) => [
+          pool.id,
+          editingAssetPoolId === pool.id ? current[pool.id] ?? pool.name : pool.name,
+        ]),
+      ),
+    );
+  }, [editingAssetPoolId, normalizedAssetPools]);
+
   const commitPoolName = (poolId: string) => {
     const draft = poolNameDrafts[poolId];
     if (draft === undefined) return;
     setEditingPoolId(null);
     updateResourcePool(poolId, { name: draft });
+  };
+
+  const commitAssetPoolName = (poolId: string) => {
+    const draft = assetPoolNameDrafts[poolId];
+    if (draft === undefined) return;
+    setEditingAssetPoolId(null);
+    updateAssetPool(poolId, { name: draft });
   };
 
   const DEMAND_UNIT_OPTIONS: DemandUnit[] = ['hour', 'day', 'week', 'month'];
@@ -437,54 +477,227 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                 />
               </div>
 
-              {capacityMode === 'sharedAllocation' ? (
+              <div className="space-y-5">
                 <div className="space-y-4">
+                  <SectionLabel>Teams</SectionLabel>
+                  {capacityMode === 'sharedAllocation' ? (
+                    <>
+                      <div className="rounded-xl border-2 border-slate-900 bg-white px-3 py-2 text-[10px] font-medium text-slate-600">
+                        Shared allocation keeps processing time as real step time. Team pools create a daily budget for each node, and nodes still use their own people count as the slot cap.
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-bold text-slate-500">Team Pools</div>
+                        <button
+                          type="button"
+                          onClick={addResourcePool}
+                          className="inline-flex items-center gap-1.5 rounded-xl border-2 border-slate-900 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition active:translate-y-[1px] shadow-[2px_2px_0px_0px_rgba(15,23,42,0.85)]"
+                        >
+                          <Plus size={12} />
+                          Add Team
+                        </button>
+                      </div>
+
+                      {normalizedResourcePools.map((pool) => {
+                        const poolTotals = poolTotalsById.get(pool.id);
+                        const theme = RESOURCE_POOL_COLOR_THEMES[pool.colorId!];
+                        const allocationUsesEqualSplit =
+                          (poolTotals?.totalAllocatedPercent ?? 0) <= 0 && (poolTotals?.workNodeCount ?? 0) > 0;
+                        const effectiveAllocatedPercent = allocationUsesEqualSplit ? 100 : poolTotals?.totalAllocatedPercent ?? 0;
+                        const effectiveRemainingPercent = allocationUsesEqualSplit ? 0 : poolTotals?.remainingPercent ?? 0;
+                        const isDefaultPool = pool.id === DEFAULT_RESOURCE_POOL_ID;
+
+                        return (
+                          <div
+                            key={pool.id}
+                            className="rounded-xl border-2 border-slate-900 p-3 space-y-3 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.85)]"
+                            style={{ backgroundColor: theme.panel }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <ResourcePoolAvatar avatarId={pool.avatarId!} colorId={pool.colorId} size={36} />
+                              <input
+                                type="text"
+                                value={poolNameDrafts[pool.id] ?? pool.name}
+                                onChange={(event) =>
+                                  setPoolNameDrafts((current) => ({
+                                    ...current,
+                                    [pool.id]: event.target.value,
+                                  }))
+                                }
+                                onFocus={() => setEditingPoolId(pool.id)}
+                                onBlur={() => commitPoolName(pool.id)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    event.currentTarget.blur();
+                                  }
+                                }}
+                                className="flex-1 min-w-0 rounded-lg border-2 border-slate-900 bg-white px-2.5 py-1.5 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                              />
+                              {isDefaultPool ? (
+                                <span className="rounded-full border-2 border-slate-900 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-slate-700">
+                                  Default
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => deleteResourcePool(pool.id)}
+                                  className="rounded-lg border-2 border-slate-900 bg-white p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600 transition active:translate-y-[1px]"
+                                  title="Delete team pool"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
+                            </div>
+
+                            <div>
+                              <div className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-500 mb-1.5">Icon</div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {RESOURCE_POOL_AVATAR_IDS.map((avatarId) => (
+                                  <button
+                                    key={avatarId}
+                                    type="button"
+                                    onClick={() => updateResourcePool(pool.id, { avatarId })}
+                                    className={`rounded-xl border-2 p-0.5 transition ${
+                                      pool.avatarId === avatarId
+                                        ? 'border-slate-900 bg-white shadow-[2px_2px_0px_0px_rgba(15,23,42,0.85)]'
+                                        : 'border-transparent hover:-translate-y-0.5'
+                                    }`}
+                                    title={RESOURCE_POOL_AVATAR_PALETTES[avatarId].label}
+                                  >
+                                    <ResourcePoolAvatar avatarId={avatarId} colorId={pool.colorId} size={30} />
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-500 mb-1.5">Colour</div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {RESOURCE_POOL_COLOR_IDS.map((colorId) => {
+                                  const colorTheme = RESOURCE_POOL_COLOR_THEMES[colorId];
+                                  return (
+                                    <button
+                                      key={colorId}
+                                      type="button"
+                                      onClick={() => updateResourcePool(pool.id, { colorId })}
+                                      className={`rounded-full border-2 w-7 h-7 transition hover:scale-110 ${
+                                        pool.colorId === colorId
+                                          ? 'border-slate-900 scale-110 ring-2 ring-offset-1 ring-slate-300'
+                                          : 'border-slate-900/50'
+                                      }`}
+                                      style={{ backgroundColor: colorTheme.circle }}
+                                      title={colorTheme.label}
+                                    />
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              <SegmentedToggle
+                                options={[{ id: 'fte', label: 'FTE' }, { id: 'hours', label: 'Hours / Day' }]}
+                                value={pool.inputMode}
+                                onChange={(id) => updateResourcePool(pool.id, { inputMode: id as any })}
+                              />
+                              <input
+                                type="number"
+                                min="0"
+                                step={pool.inputMode === 'fte' ? '0.25' : '1'}
+                                value={pool.capacityValue}
+                                onChange={(event) => updateResourcePool(pool.id, { capacityValue: Number(event.target.value) })}
+                                className="w-full rounded-lg border-2 border-slate-900 bg-white px-2.5 py-1.5 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                              />
+                              {pool.inputMode === 'fte' && (
+                                <p className="text-[10px] text-slate-500">1 FTE = {WORKDAY_HOURS}h/day</p>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-4 gap-1.5">
+                              <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
+                                <div className="text-[8px] font-bold uppercase text-slate-400">Budget</div>
+                                <div className="text-xs font-black text-slate-700 font-mono">{(poolTotals?.totalSharedHoursPerDay ?? 0).toFixed(1)}h</div>
+                              </div>
+                              <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
+                                <div className="text-[8px] font-bold uppercase text-slate-400">Nodes</div>
+                                <div className="text-xs font-black text-slate-700 font-mono">{poolTotals?.workNodeCount ?? 0}</div>
+                              </div>
+                              <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
+                                <div className="text-[8px] font-bold uppercase text-slate-400">Alloc</div>
+                                <div className="text-xs font-black text-slate-700 font-mono">{effectiveAllocatedPercent.toFixed(0)}%</div>
+                              </div>
+                              <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
+                                <div className="text-[8px] font-bold uppercase text-slate-400">Free</div>
+                                <div className={`text-xs font-black font-mono ${effectiveRemainingPercent < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+                                  {effectiveRemainingPercent.toFixed(0)}%
+                                </div>
+                              </div>
+                            </div>
+
+                            {allocationUsesEqualSplit && (
+                              <p className="text-[10px] font-medium text-amber-700">
+                                All allocations are 0% — pool will be split evenly across nodes.
+                              </p>
+                            )}
+                            {poolTotals?.isOverAllocated && !allocationUsesEqualSplit && (
+                              <p className="text-[10px] font-medium text-red-600">
+                                Over-allocated — this pool is over-committed.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <div className="rounded-xl border-2 border-slate-200 bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">
+                        Each node manages its own people count. Switch to Shared Allocation when teams split time across multiple steps.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-4">
+                  <SectionLabel>Equipment</SectionLabel>
                   <div className="rounded-xl border-2 border-slate-900 bg-white px-3 py-2 text-[10px] font-medium text-slate-600">
-                    Shared allocation keeps processing time as real step time. Pool allocations create a daily budget for each node, and nodes use their own resource count as the active-item cap.
+                    Equipment pools are optional shared stations or assets. They are simple slot counts, not hours or FTE.
                   </div>
-                  {/* Add pool button */}
                   <div className="flex items-center justify-between">
-                    <div className="text-xs font-bold text-slate-500">Resource Pools</div>
+                    <div className="text-xs font-bold text-slate-500">Equipment Pools</div>
                     <button
                       type="button"
-                      onClick={addResourcePool}
+                      onClick={addAssetPool}
                       className="inline-flex items-center gap-1.5 rounded-xl border-2 border-slate-900 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition active:translate-y-[1px] shadow-[2px_2px_0px_0px_rgba(15,23,42,0.85)]"
                     >
                       <Plus size={12} />
-                      Add Pool
+                      Add Equipment
                     </button>
                   </div>
 
-                  {/* Pool cards */}
-                  {normalizedResourcePools.map((pool) => {
-                    const poolTotals = poolTotalsById.get(pool.id);
-                    const theme = RESOURCE_POOL_COLOR_THEMES[pool.colorId!];
-                    const allocationUsesEqualSplit =
-                      (poolTotals?.totalAllocatedPercent ?? 0) <= 0 && (poolTotals?.workNodeCount ?? 0) > 0;
-                    const effectiveAllocatedPercent = allocationUsesEqualSplit ? 100 : poolTotals?.totalAllocatedPercent ?? 0;
-                    const effectiveRemainingPercent = allocationUsesEqualSplit ? 0 : poolTotals?.remainingPercent ?? 0;
-                    const isDefaultPool = pool.id === DEFAULT_RESOURCE_POOL_ID;
-
-                    return (
+                  {normalizedAssetPools.length === 0 ? (
+                    <div className="rounded-xl border-2 border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+                      No equipment pools yet. Leave nodes unassigned if they do not need a station or asset.
+                    </div>
+                  ) : (
+                    normalizedAssetPools.map((pool) => (
                       <div
                         key={pool.id}
-                        className="rounded-xl border-2 border-slate-900 p-3 space-y-3 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.85)]"
-                        style={{ backgroundColor: theme.panel }}
+                        className="rounded-xl border-2 border-slate-900 bg-amber-50 p-3 space-y-3 shadow-[3px_3px_0px_0px_rgba(15,23,42,0.85)]"
                       >
-                        {/* Name row */}
                         <div className="flex items-center gap-2">
-                          <ResourcePoolAvatar avatarId={pool.avatarId!} colorId={pool.colorId} size={36} />
+                          <div className="flex h-9 w-9 items-center justify-center rounded-xl border-2 border-slate-900 bg-white text-amber-700">
+                            <Wrench size={16} />
+                          </div>
                           <input
                             type="text"
-                            value={poolNameDrafts[pool.id] ?? pool.name}
+                            value={assetPoolNameDrafts[pool.id] ?? pool.name}
                             onChange={(event) =>
-                              setPoolNameDrafts((current) => ({
+                              setAssetPoolNameDrafts((current) => ({
                                 ...current,
                                 [pool.id]: event.target.value,
                               }))
                             }
-                            onFocus={() => setEditingPoolId(pool.id)}
-                            onBlur={() => commitPoolName(pool.id)}
+                            onFocus={() => setEditingAssetPoolId(pool.id)}
+                            onBlur={() => commitAssetPoolName(pool.id)}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter') {
                                 event.preventDefault();
@@ -493,132 +706,43 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                             }}
                             className="flex-1 min-w-0 rounded-lg border-2 border-slate-900 bg-white px-2.5 py-1.5 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
                           />
-                          {isDefaultPool ? (
-                            <span className="rounded-full border-2 border-slate-900 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-slate-700">
-                              Default
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => deleteResourcePool(pool.id)}
-                              className="rounded-lg border-2 border-slate-900 bg-white p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600 transition active:translate-y-[1px]"
-                              title="Delete pool"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => deleteAssetPool(pool.id)}
+                            className="rounded-lg border-2 border-slate-900 bg-white p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600 transition active:translate-y-[1px]"
+                            title="Delete equipment pool"
+                          >
+                            <Trash2 size={13} />
+                          </button>
                         </div>
 
-                        {/* Avatar picker */}
                         <div>
-                          <div className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-500 mb-1.5">Icon</div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {RESOURCE_POOL_AVATAR_IDS.map((avatarId) => (
-                              <button
-                                key={avatarId}
-                                type="button"
-                                onClick={() => updateResourcePool(pool.id, { avatarId })}
-                                className={`rounded-xl border-2 p-0.5 transition ${
-                                  pool.avatarId === avatarId
-                                    ? 'border-slate-900 bg-white shadow-[2px_2px_0px_0px_rgba(15,23,42,0.85)]'
-                                    : 'border-transparent hover:-translate-y-0.5'
-                                }`}
-                                title={RESOURCE_POOL_AVATAR_PALETTES[avatarId].label}
-                              >
-                                <ResourcePoolAvatar avatarId={avatarId} colorId={pool.colorId} size={30} />
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Color picker */}
-                        <div>
-                          <div className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-500 mb-1.5">Colour</div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {RESOURCE_POOL_COLOR_IDS.map((colorId) => {
-                              const colorTheme = RESOURCE_POOL_COLOR_THEMES[colorId];
-                              return (
-                                <button
-                                  key={colorId}
-                                  type="button"
-                                  onClick={() => updateResourcePool(pool.id, { colorId })}
-                                  className={`rounded-full border-2 w-7 h-7 transition hover:scale-110 ${
-                                    pool.colorId === colorId
-                                      ? 'border-slate-900 scale-110 ring-2 ring-offset-1 ring-slate-300'
-                                      : 'border-slate-900/50'
-                                  }`}
-                                  style={{ backgroundColor: colorTheme.circle }}
-                                  title={colorTheme.label}
-                                />
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* Capacity input */}
-                        <div className="space-y-2">
-                          <SegmentedToggle
-                            options={[{ id: 'fte', label: 'FTE' }, { id: 'hours', label: 'Hours / Day' }]}
-                            value={pool.inputMode}
-                            onChange={(id) => updateResourcePool(pool.id, { inputMode: id as any })}
-                          />
+                          <div className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-500 mb-1.5">Units</div>
                           <input
                             type="number"
                             min="0"
-                            step={pool.inputMode === 'fte' ? '0.25' : '1'}
-                            value={pool.capacityValue}
-                            onChange={(event) => updateResourcePool(pool.id, { capacityValue: Number(event.target.value) })}
+                            step="1"
+                            value={pool.units}
+                            onChange={(event) => updateAssetPool(pool.id, { units: Number(event.target.value) })}
                             className="w-full rounded-lg border-2 border-slate-900 bg-white px-2.5 py-1.5 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
                           />
-                          {pool.inputMode === 'fte' && (
-                            <p className="text-[10px] text-slate-500">1 FTE = {WORKDAY_HOURS}h/day</p>
-                          )}
                         </div>
 
-                        {/* Stats row - condensed */}
-                        <div className="grid grid-cols-4 gap-1.5">
+                        <div className="grid grid-cols-2 gap-1.5">
                           <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
-                            <div className="text-[8px] font-bold uppercase text-slate-400">Budget</div>
-                            <div className="text-xs font-black text-slate-700 font-mono">{(poolTotals?.totalSharedHoursPerDay ?? 0).toFixed(1)}h</div>
+                            <div className="text-[8px] font-bold uppercase text-slate-400">Units</div>
+                            <div className="text-xs font-black text-slate-700 font-mono">{pool.units}</div>
                           </div>
                           <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
                             <div className="text-[8px] font-bold uppercase text-slate-400">Nodes</div>
-                            <div className="text-xs font-black text-slate-700 font-mono">{poolTotals?.workNodeCount ?? 0}</div>
-                          </div>
-                          <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
-                            <div className="text-[8px] font-bold uppercase text-slate-400">Alloc</div>
-                            <div className="text-xs font-black text-slate-700 font-mono">{effectiveAllocatedPercent.toFixed(0)}%</div>
-                          </div>
-                          <div className="rounded-lg border-2 border-slate-900 bg-white px-2 py-1.5 text-center">
-                            <div className="text-[8px] font-bold uppercase text-slate-400">Free</div>
-                            <div className={`text-xs font-black font-mono ${effectiveRemainingPercent < 0 ? 'text-red-600' : 'text-slate-700'}`}>
-                              {effectiveRemainingPercent.toFixed(0)}%
-                            </div>
+                            <div className="text-xs font-black text-slate-700 font-mono">{assetAssignmentsById.get(pool.id) || 0}</div>
                           </div>
                         </div>
-
-                        {/* Warnings */}
-                        {allocationUsesEqualSplit && (
-                          <p className="text-[10px] font-medium text-amber-700">
-                            All allocations are 0% — pool will be split evenly across nodes.
-                          </p>
-                        )}
-                        {poolTotals?.isOverAllocated && !allocationUsesEqualSplit && (
-                          <p className="text-[10px] font-medium text-red-600">
-                            Over-allocated — this pool is over-committed.
-                          </p>
-                        )}
                       </div>
-                    );
-                  })}
+                    ))
+                  )}
                 </div>
-              ) : (
-                <div className="rounded-xl border-2 border-slate-200 bg-slate-50 p-3">
-                  <p className="text-xs text-slate-500">
-                    Each node manages its own capacity. Switch to Shared Allocation when people divide time across multiple steps.
-                  </p>
-                </div>
-              )}
+              </div>
             </>
           )}
         </div>

@@ -1,4 +1,5 @@
 import {
+  AssetPool,
   AppNode,
   CapacityMode,
   DEFAULT_WORKING_HOURS,
@@ -19,6 +20,8 @@ import {
 } from './types';
 import {
   clampAllocationPercent,
+  getAssetPools,
+  getNodeAssetPoolId,
   createDefaultResourcePool,
   DEFAULT_RESOURCE_POOL_ID,
   DEFAULT_SHARED_CAPACITY_INPUT_MODE,
@@ -126,6 +129,8 @@ export const getNormalizedResourcePools = (
     sharedCapacityValue,
   });
 
+export const getNormalizedAssetPools = (assetPools?: AssetPool[]) => getAssetPools(assetPools);
+
 export const getLegacySharedCapacityFields = (resourcePools: ResourcePool[]) => {
   const defaultPool =
     resourcePools.find((pool) => pool.id === DEFAULT_RESOURCE_POOL_ID) || createDefaultResourcePool();
@@ -142,6 +147,7 @@ export interface CapacityStateDefaults {
   sharedCapacityInputMode: SharedCapacityInputMode;
   sharedCapacityValue: number;
   resourcePools: ResourcePool[];
+  assetPools: AssetPool[];
 }
 
 export const createDefaultCapacityState = (): CapacityStateDefaults => {
@@ -157,6 +163,7 @@ export const createDefaultCapacityState = (): CapacityStateDefaults => {
     sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
     sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
     resourcePools,
+    assetPools: [],
   };
 };
 
@@ -165,6 +172,7 @@ export const getScenarioCapacityState = (scenario: {
   sharedCapacityInputMode?: SharedCapacityInputMode;
   sharedCapacityValue?: number;
   resourcePools?: ResourcePool[];
+  assetPools?: AssetPool[];
 }): CapacityStateDefaults => {
   const capacityMode = scenario.capacityMode ?? 'local';
   const sharedCapacityInputMode =
@@ -184,6 +192,7 @@ export const getScenarioCapacityState = (scenario: {
     sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
     sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
     resourcePools,
+    assetPools: getNormalizedAssetPools(scenario.assetPools),
   };
 };
 
@@ -211,6 +220,30 @@ export const normalizeNodesForResourcePools = (
     } as AppNode;
   });
 };
+
+export const normalizeNodesForAssetPools = (
+  nodes: AppNode[],
+  assetPools: AssetPool[],
+): AppNode[] =>
+  nodes.map((node) => {
+    if (node.type !== 'processNode' && node.type !== 'startNode') return node;
+    const pData = node.data as ProcessNodeData;
+    const resolvedPoolId = getNodeAssetPoolId(pData, assetPools);
+    if (pData.assetPoolId === resolvedPoolId) return node;
+    return {
+      ...node,
+      data: {
+        ...pData,
+        assetPoolId: resolvedPoolId,
+      },
+    } as AppNode;
+  });
+
+export const normalizeNodesForCapacityPools = (
+  nodes: AppNode[],
+  resourcePools: ResourcePool[],
+  assetPools: AssetPool[],
+): AppNode[] => normalizeNodesForAssetPools(normalizeNodesForResourcePools(nodes, resourcePools), assetPools);
 
 const getNodeBatchSize = (data: Partial<ProcessNodeData> | undefined) => {
   const raw = Number(data?.batchSize);
@@ -261,6 +294,13 @@ export const normalizeProcessNodeSettings = (
         ? merged.resourcePoolId.trim()
         : undefined;
     normalized.resourcePoolId = resourcePoolId;
+  }
+  if (Object.prototype.hasOwnProperty.call(nextData, 'assetPoolId')) {
+    const assetPoolId =
+      typeof merged.assetPoolId === 'string' && merged.assetPoolId.trim()
+        ? merged.assetPoolId.trim()
+        : undefined;
+    normalized.assetPoolId = assetPoolId;
   }
 
   return normalized;

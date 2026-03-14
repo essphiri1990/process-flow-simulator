@@ -10,6 +10,7 @@ import {
   MarkerType,
 } from 'reactflow';
 import {
+  AssetPool,
   DEFAULT_KPI_TARGETS,
   SimulationState,
   ProcessNode,
@@ -54,13 +55,17 @@ import {
 import { showToast } from './components/Toast';
 import { computeLeadMetrics, computeThroughputFromCompletions, NODE_UTILIZATION_ROLLING_WINDOW_TICKS } from './metrics';
 import {
+  getAssetPoolById,
   DEFAULT_RESOURCE_POOL_ID,
   DEFAULT_SHARED_CAPACITY_INPUT_MODE,
   DEFAULT_SHARED_CAPACITY_VALUE,
   getDefaultResourcePool,
+  getEffectiveNodeCapacityLimit,
   getMaxPossibleProcessingTime,
   getLocalCapacityUnits,
+  getNodeAssetUnits,
   getNodeCapacityProfile,
+  getNodePeopleCapacityLimit,
 } from './capacityModel';
 import {
   getDefaultResourcePoolAvatarId,
@@ -89,9 +94,10 @@ import {
   DEFAULT_NODE_FLOW_MODE,
   DEFAULT_PULL_OPEN_SLOTS_REQUIRED,
   getLegacySharedCapacityFields,
+  getNormalizedAssetPools,
   getNormalizedResourcePools,
   getScenarioCapacityState,
-  normalizeNodesForResourcePools,
+  normalizeNodesForCapacityPools,
   normalizeProcessNodeSettings,
 } from './storeState';
 import {
@@ -157,6 +163,7 @@ type EditorSnapshot = Pick<
   | 'sharedCapacityInputMode'
   | 'sharedCapacityValue'
   | 'resourcePools'
+  | 'assetPools'
   | 'simulationSeed'
   | 'kpiTargets'
   | 'currentCanvasId'
@@ -189,6 +196,7 @@ const createEditorSnapshot = (state: EditorSnapshot): EditorSnapshot =>
     sharedCapacityInputMode: state.sharedCapacityInputMode,
     sharedCapacityValue: state.sharedCapacityValue,
     resourcePools: state.resourcePools,
+    assetPools: state.assetPools,
     simulationSeed: state.simulationSeed,
     kpiTargets: state.kpiTargets,
     currentCanvasId: state.currentCanvasId,
@@ -461,6 +469,7 @@ const shouldResetMetricsForNodeData = (
   if ('demandTarget' in nextPartial && nextPartial.demandTarget !== prev.demandTarget) return true;
   if ('allocationPercent' in nextPartial && nextPartial.allocationPercent !== prev.allocationPercent) return true;
   if ('resourcePoolId' in nextPartial && nextPartial.resourcePoolId !== prev.resourcePoolId) return true;
+  if ('assetPoolId' in nextPartial && nextPartial.assetPoolId !== prev.assetPoolId) return true;
   if ('workingHours' in nextPartial) {
     const nextWorking = nextPartial.workingHours
       ? { ...(prev.workingHours || createDefaultWorkingHours()), ...nextPartial.workingHours }
@@ -610,6 +619,7 @@ const createFlowSnapshot = (
     | 'sharedCapacityInputMode'
     | 'sharedCapacityValue'
     | 'resourcePools'
+    | 'assetPools'
     | 'simulationSeed'
     | 'kpiTargets'
   >,
@@ -634,6 +644,7 @@ const createFlowSnapshot = (
   sharedCapacityInputMode: state.sharedCapacityInputMode,
   sharedCapacityValue: state.sharedCapacityValue,
   resourcePools: state.resourcePools,
+  assetPools: state.assetPools,
   simulationSeed: state.simulationSeed,
   kpiTargets: state.kpiTargets,
   canvasName: normalizeCanvasName(options.canvasName),
@@ -685,6 +696,7 @@ const applyCloudFlowSnapshot = (
     sharedCapacityInputMode,
     sharedCapacityValue,
   );
+  const assetPools = getNormalizedAssetPools(snapshot.assetPools as AssetPool[] | undefined);
   const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
   const simulationSeed = normalizeSeed(snapshot.simulationSeed, getState().simulationSeed);
   const kpiTargets = {
@@ -692,13 +704,18 @@ const applyCloudFlowSnapshot = (
     ...(snapshot.kpiTargets || {}),
   };
   const nextCanvasName = normalizeCanvasName(options.canvasName || snapshot.canvasName || getState().currentCanvasName);
-  const normalizedNodesForPools = normalizeNodesForResourcePools(snapshot.nodes as AppNode[], resourcePools);
+  const normalizedNodesForPools = normalizeNodesForCapacityPools(
+    snapshot.nodes as AppNode[],
+    resourcePools,
+    assetPools,
+  );
   const normalizedEdges = normalizeFlowEdgeHandles<Edge>(normalizedNodesForPools as AppNode[], snapshot.edges as Edge[]);
   const nextNodes = resetRuntimeNodeState(normalizedNodesForPools as AppNode[], normalizedEdges, {
     capacityMode,
     sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
     sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
     resourcePools,
+    assetPools,
   });
   resetSimulationRng(simulationSeed);
   clearVisualTransferCleanupTimers();
@@ -722,6 +739,7 @@ const applyCloudFlowSnapshot = (
     sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
     sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
     resourcePools,
+    assetPools,
     demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
     simulationSeed,
     kpiTargets,
@@ -787,6 +805,7 @@ const buildNodeCapacityProfiles = (
     sharedCapacityInputMode: SharedCapacityInputMode;
     sharedCapacityValue: number;
     resourcePools: ResourcePool[];
+    assetPools: AssetPool[];
   }
 ) => {
   const profiles = new Map<string, ReturnType<typeof getNodeCapacityProfile>>();
@@ -851,12 +870,15 @@ const getSharedNodeBudgetStateForTick = (
 const computeValidationErrorForNode = (
   node: AppNode,
   edgesBySource: Map<string, Edge[]>,
-  nodeCapacityProfiles: Map<string, ReturnType<typeof getNodeCapacityProfile>>
+  nodeCapacityProfiles: Map<string, ReturnType<typeof getNodeCapacityProfile>>,
+  assetPools: AssetPool[],
 ): string | undefined => {
   if (node.type === 'annotationNode' || node.type === 'endNode') return undefined;
 
   const pData = node.data as ProcessNodeData;
   const capacityProfile = nodeCapacityProfiles.get(node.id);
+  const assetUnits = getNodeAssetUnits(pData, assetPools);
+  const effectiveCapacityLimit = getEffectiveNodeCapacityLimit(pData, capacityProfile, assetPools);
   let validationError: string | undefined;
   const outgoing = edgesBySource.get(node.id);
 
@@ -868,6 +890,8 @@ const computeValidationErrorForNode = (
       validationError = 'Zero Allocation';
     } else if (getLocalCapacityUnits(pData.resources) === 0) {
       validationError = 'Zero Capacity';
+    } else if (assetUnits !== null && assetUnits <= 0) {
+      validationError = 'Zero Equipment';
     } else if (getMaxPossibleProcessingTime(pData.processingTime, pData.variability || 0) > capacityProfile.dailyBudgetMinutes) {
       validationError = 'Step Exceeds Daily Budget';
     }
@@ -876,12 +900,13 @@ const computeValidationErrorForNode = (
     }
   } else if (getLocalCapacityUnits(pData.resources) === 0) {
     validationError = 'Zero Capacity';
+  } else if (assetUnits !== null && assetUnits <= 0) {
+    validationError = 'Zero Equipment';
   }
   if (
-    !capacityProfile?.usesSharedAllocation &&
+    effectiveCapacityLimit > 0 &&
     node.type === 'processNode' &&
-    getLocalCapacityUnits(pData.resources) > 0 &&
-    getNodeBatchSize(pData) > getLocalCapacityUnits(pData.resources)
+    getNodeBatchSize(pData) > effectiveCapacityLimit
   ) {
     validationError = 'Batch > Capacity';
   }
@@ -897,6 +922,7 @@ const applyValidationToNodes = (
     sharedCapacityInputMode: SharedCapacityInputMode;
     sharedCapacityValue: number;
     resourcePools: ResourcePool[];
+    assetPools: AssetPool[];
   }
 ): AppNode[] => {
   const edgesBySource = buildEdgesBySource(edges);
@@ -904,7 +930,12 @@ const applyValidationToNodes = (
 
   return nodes.map((node) => {
     if (node.type === 'annotationNode') return node;
-    const nextValidationError = computeValidationErrorForNode(node, edgesBySource, nodeCapacityProfiles);
+    const nextValidationError = computeValidationErrorForNode(
+      node,
+      edgesBySource,
+      nodeCapacityProfiles,
+      settings.assetPools,
+    );
     if ((node.data as ProcessNodeData).validationError === nextValidationError) {
       return node;
     }
@@ -919,7 +950,7 @@ const applyValidationToNodes = (
 };
 
 const reconcileGraphState = (
-  state: Pick<SimulationState, 'items' | 'edges' | 'nodes' | 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue' | 'resourcePools'>,
+  state: Pick<SimulationState, 'items' | 'edges' | 'nodes' | 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue' | 'resourcePools' | 'assetPools'>,
   nextNodes: AppNode[],
   nextEdges: Edge[],
 ) => {
@@ -928,7 +959,8 @@ const reconcileGraphState = (
     state.sharedCapacityInputMode,
     state.sharedCapacityValue,
   );
-  const normalizedNodes = normalizeNodesForResourcePools(nextNodes, resourcePools);
+  const assetPools = getNormalizedAssetPools(state.assetPools);
+  const normalizedNodes = normalizeNodesForCapacityPools(nextNodes, resourcePools, assetPools);
   const normalizedEdges = normalizeGraphEdges(normalizedNodes, nextEdges);
   const nextItems = reconcileItemsForGraph(state.items, normalizedNodes, normalizedEdges);
   return {
@@ -947,6 +979,7 @@ const resetRuntimeNodeState = (
     sharedCapacityInputMode: SharedCapacityInputMode;
     sharedCapacityValue: number;
     resourcePools: ResourcePool[];
+    assetPools: AssetPool[];
   }
 ): AppNode[] =>
   applyValidationToNodes(
@@ -977,12 +1010,13 @@ const resetRuntimeNodeState = (
   );
 
 const getSharedCapacitySettings = (
-  state: Pick<SimulationState, 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue' | 'resourcePools'>
+  state: Pick<SimulationState, 'capacityMode' | 'sharedCapacityInputMode' | 'sharedCapacityValue' | 'resourcePools' | 'assetPools'>
 ) => ({
   capacityMode: state.capacityMode,
   sharedCapacityInputMode: state.sharedCapacityInputMode,
   sharedCapacityValue: state.sharedCapacityValue,
   resourcePools: state.resourcePools,
+  assetPools: state.assetPools,
 });
 
 const resolveBlockedItemTarget = (
@@ -1153,10 +1187,12 @@ const restoreEditorSnapshot = (
     snapshot.sharedCapacityInputMode,
     snapshot.sharedCapacityValue,
   );
+  const assetPools = getNormalizedAssetPools(snapshot.assetPools);
   const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
-  const clonedNodes = normalizeNodesForResourcePools(
+  const clonedNodes = normalizeNodesForCapacityPools(
     cloneSerializable(snapshot.nodes) as AppNode[],
     resourcePools,
+    assetPools,
   );
   const clonedEdges = cloneSerializable(snapshot.edges) as Edge[];
   const normalizedEdges = normalizeFlowEdgeHandles(clonedNodes, clonedEdges);
@@ -1165,6 +1201,7 @@ const restoreEditorSnapshot = (
     sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
     sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
     resourcePools,
+    assetPools,
   });
   resetSimulationRng(snapshot.simulationSeed);
   clearVisualTransferCleanupTimers();
@@ -1186,6 +1223,7 @@ const restoreEditorSnapshot = (
     sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
     sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
     resourcePools,
+    assetPools,
     demandTotalTicks: DEMAND_UNIT_TICKS[snapshot.demandUnit],
     simulationSeed: snapshot.simulationSeed,
     kpiTargets: cloneSerializable(snapshot.kpiTargets),
@@ -1246,6 +1284,7 @@ export const useStore = create<SimulationState>((set, get) => ({
   sharedCapacityInputMode: initialCapacityState.sharedCapacityInputMode,
   sharedCapacityValue: initialCapacityState.sharedCapacityValue,
   resourcePools: initialCapacityState.resourcePools,
+  assetPools: initialCapacityState.assetPools,
   demandTotalTicks: DEMAND_UNIT_TICKS.week,
   demandArrivalsGenerated: 0,
   demandArrivalsByNode: {},
@@ -1387,6 +1426,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         sharedCapacityInputMode: state.sharedCapacityInputMode,
         sharedCapacityValue: state.sharedCapacityValue,
         resourcePools: state.resourcePools,
+        assetPools: state.assetPools,
       };
       resetSimulationRng(state.simulationSeed);
       return {
@@ -1411,6 +1451,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
         sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
         resourcePools,
+        assetPools: state.assetPools,
       };
       resetSimulationRng(state.simulationSeed);
       return {
@@ -1438,6 +1479,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
         sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
         resourcePools,
+        assetPools: state.assetPools,
       };
       resetSimulationRng(state.simulationSeed);
       return {
@@ -1472,13 +1514,14 @@ export const useStore = create<SimulationState>((set, get) => ({
       ];
       const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
       const nextNodes = applyValidationToNodes(
-        normalizeNodesForResourcePools(state.nodes, resourcePools),
+        normalizeNodesForCapacityPools(state.nodes, resourcePools, state.assetPools),
         state.edges,
         {
           capacityMode: state.capacityMode,
           sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
           sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
           resourcePools,
+          assetPools: state.assetPools,
         },
       );
       return {
@@ -1520,12 +1563,13 @@ export const useStore = create<SimulationState>((set, get) => ({
       });
       const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
       const shouldReset = patch.inputMode !== undefined || patch.capacityValue !== undefined;
-      const normalizedNodes = normalizeNodesForResourcePools(state.nodes, resourcePools);
+      const normalizedNodes = normalizeNodesForCapacityPools(state.nodes, resourcePools, state.assetPools);
       const nextSettings = {
         capacityMode: state.capacityMode,
         sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
         sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
         resourcePools,
+        assetPools: state.assetPools,
       };
 
       if (!shouldReset) {
@@ -1563,18 +1607,111 @@ export const useStore = create<SimulationState>((set, get) => ({
       }
       const resourcePools: ResourcePool[] = currentPools.filter((pool) => pool.id !== id);
       const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
-      const normalizedNodes = normalizeNodesForResourcePools(state.nodes, resourcePools);
+      const normalizedNodes = normalizeNodesForCapacityPools(state.nodes, resourcePools, state.assetPools);
       const nextSettings = {
         capacityMode: state.capacityMode,
         sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
         sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
         resourcePools,
+        assetPools: state.assetPools,
       };
       resetSimulationRng(state.simulationSeed);
       return {
         resourcePools,
         sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
         sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(normalizedNodes, state.edges, nextSettings),
+      };
+    });
+    scheduleAutosave(get);
+  },
+
+  addAssetPool: () => {
+    if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const currentPools = getNormalizedAssetPools(state.assetPools);
+      return {
+        assetPools: [
+          ...currentPools,
+          {
+            id: `asset-pool-${generateId()}`,
+            name: `Equipment ${currentPools.length + 1}`,
+            units: 1,
+          },
+        ],
+      };
+    });
+    scheduleAutosave(get);
+  },
+  updateAssetPool: (id: string, patch: Partial<AssetPool>) => {
+    if (get().readOnlyMode) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const currentPools = getNormalizedAssetPools(state.assetPools);
+      if (!currentPools.some((pool) => pool.id === id)) {
+        return state;
+      }
+
+      const assetPools = currentPools.map((pool): AssetPool =>
+        pool.id === id
+          ? {
+              ...pool,
+              ...(patch.name !== undefined ? { name: patch.name } : {}),
+              ...(patch.units !== undefined
+                ? { units: Number.isFinite(patch.units) ? Math.max(0, Math.round(Number(patch.units))) : pool.units }
+                : {}),
+            }
+          : pool,
+      );
+      const shouldReset = patch.units !== undefined;
+      const normalizedNodes = normalizeNodesForCapacityPools(state.nodes, state.resourcePools, assetPools);
+      const nextSettings = {
+        capacityMode: state.capacityMode,
+        sharedCapacityInputMode: state.sharedCapacityInputMode,
+        sharedCapacityValue: state.sharedCapacityValue,
+        resourcePools: state.resourcePools,
+        assetPools,
+      };
+
+      if (!shouldReset) {
+        return {
+          assetPools,
+          nodes: applyValidationToNodes(normalizedNodes, state.edges, nextSettings),
+        };
+      }
+
+      resetSimulationRng(state.simulationSeed);
+      return {
+        assetPools,
+        ...buildRunStateReset(),
+        nodes: resetRuntimeNodeState(normalizedNodes, state.edges, nextSettings),
+      };
+    });
+    scheduleAutosave(get);
+  },
+  deleteAssetPool: (id: string) => {
+    if (get().readOnlyMode) return;
+    if (!id) return;
+    pushUndoSnapshot(get(), set);
+    set((state) => {
+      const currentPools = getNormalizedAssetPools(state.assetPools);
+      if (!currentPools.some((pool) => pool.id === id)) {
+        return state;
+      }
+      const assetPools = currentPools.filter((pool) => pool.id !== id);
+      const normalizedNodes = normalizeNodesForCapacityPools(state.nodes, state.resourcePools, assetPools);
+      const nextSettings = {
+        capacityMode: state.capacityMode,
+        sharedCapacityInputMode: state.sharedCapacityInputMode,
+        sharedCapacityValue: state.sharedCapacityValue,
+        resourcePools: state.resourcePools,
+        assetPools,
+      };
+      resetSimulationRng(state.simulationSeed);
+      return {
+        assetPools,
         ...buildRunStateReset(),
         nodes: resetRuntimeNodeState(normalizedNodes, state.edges, nextSettings),
       };
@@ -2166,10 +2303,11 @@ export const useStore = create<SimulationState>((set, get) => ({
               sharedCapacityInputMode,
               sharedCapacityValue,
             );
+            const assetPools = getNormalizedAssetPools(flow.assetPools as AssetPool[] | undefined);
             const legacySharedCapacityFields = getLegacySharedCapacityFields(resourcePools);
             const simulationSeed = normalizeSeed(flow.simulationSeed, get().simulationSeed);
             resetSimulationRng(simulationSeed);
-            const nextNodes = normalizeNodesForResourcePools(flow.nodes as AppNode[], resourcePools);
+            const nextNodes = normalizeNodesForCapacityPools(flow.nodes as AppNode[], resourcePools, assetPools);
             set({
                 nodes: nextNodes,
                 edges: normalizeFlowEdgeHandles(nextNodes, flow.edges),
@@ -2191,6 +2329,7 @@ export const useStore = create<SimulationState>((set, get) => ({
                 sharedCapacityInputMode: legacySharedCapacityFields.sharedCapacityInputMode,
                 sharedCapacityValue: legacySharedCapacityFields.sharedCapacityValue,
                 resourcePools,
+                assetPools,
                 demandTotalTicks: DEMAND_UNIT_TICKS[demandUnit],
                 simulationSeed,
                 kpiTargets: {
@@ -2223,10 +2362,12 @@ export const useStore = create<SimulationState>((set, get) => ({
             sharedCapacityInputMode: scenario.sharedCapacityInputMode,
             sharedCapacityValue: scenario.sharedCapacityValue,
             resourcePools: scenario.resourcePools,
+            assetPools: scenario.assetPools,
           });
-          const nodes = normalizeNodesForResourcePools(
+          const nodes = normalizeNodesForCapacityPools(
             JSON.parse(JSON.stringify(scenario.nodes)) as AppNode[],
             capacityState.resourcePools,
+            capacityState.assetPools,
           );
           const edges = normalizeFlowEdgeHandles(
             nodes,
@@ -2237,6 +2378,7 @@ export const useStore = create<SimulationState>((set, get) => ({
             sharedCapacityInputMode: capacityState.sharedCapacityInputMode,
             sharedCapacityValue: capacityState.sharedCapacityValue,
             resourcePools: capacityState.resourcePools,
+            assetPools: capacityState.assetPools,
           });
           const demandMode = scenario.demandMode ?? 'auto';
           const demandUnit = scenario.demandUnit ?? 'week';
@@ -2250,6 +2392,7 @@ export const useStore = create<SimulationState>((set, get) => ({
               sharedCapacityInputMode: capacityState.sharedCapacityInputMode,
               sharedCapacityValue: capacityState.sharedCapacityValue,
               resourcePools: capacityState.resourcePools,
+              assetPools: capacityState.assetPools,
               currentCanvasId: null,
               currentCanvasName: SCENARIO_NAMES[scenarioKey] || 'Untitled Canvas',
               ...buildRunStateReset()
@@ -2478,6 +2621,7 @@ export const useStore = create<SimulationState>((set, get) => ({
       sharedCapacityInputMode: defaultCapacityState.sharedCapacityInputMode,
       sharedCapacityValue: defaultCapacityState.sharedCapacityValue,
       resourcePools: defaultCapacityState.resourcePools,
+      assetPools: defaultCapacityState.assetPools,
       ...buildRunStateReset(),
       currentCanvasId: null,
       currentCanvasName: 'Untitled Canvas',
@@ -2588,6 +2732,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         sharedCapacityInputMode,
         sharedCapacityValue,
         resourcePools,
+        assetPools,
         demandTotalTicks,
         demandArrivalsGenerated,
         demandArrivalsByNode,
@@ -2632,6 +2777,7 @@ export const useStore = create<SimulationState>((set, get) => ({
         sharedCapacityInputMode,
         sharedCapacityValue,
         resourcePools,
+        assetPools,
       };
       const nodeCapacityProfiles = new Map<string, ReturnType<typeof getNodeCapacityProfile>>();
       for (const node of nodes) {
@@ -2812,9 +2958,10 @@ export const useStore = create<SimulationState>((set, get) => ({
         const targetData = targetNode.data as ProcessNodeData;
         if (getNodeFlowMode(targetData) !== 'pull') return true;
 
-        const localCapacity = Math.max(
-          0,
-          nodeCapacityProfiles.get(targetNodeId)?.maxConcurrentItems ?? getLocalCapacityUnits(targetData.resources),
+        const localCapacity = getEffectiveNodeCapacityLimit(
+          targetData,
+          nodeCapacityProfiles.get(targetNodeId),
+          assetPools,
         );
         const localWip = activeWipCounts.get(targetNodeId) || 0;
         return localWip < localCapacity;
@@ -2966,9 +3113,16 @@ export const useStore = create<SimulationState>((set, get) => ({
       }
 
       // Count current processing items
+      const equipmentUsageByPool = new Map<string, number>();
       for (const item of allItems) {
         if (item.status === ItemStatus.PROCESSING && item.currentNodeId) {
           processingCounts.set(item.currentNodeId, (processingCounts.get(item.currentNodeId) || 0) + 1);
+          const currentNode = nodeMap.get(item.currentNodeId);
+          if (!currentNode || currentNode.type === 'annotationNode' || currentNode.type === 'endNode') continue;
+          const assetPool = getAssetPoolById(assetPools, (currentNode.data as ProcessNodeData).assetPoolId);
+          if (assetPool) {
+            equipmentUsageByPool.set(assetPool.id, (equipmentUsageByPool.get(assetPool.id) || 0) + 1);
+          }
         }
       }
 
@@ -2993,13 +3147,12 @@ export const useStore = create<SimulationState>((set, get) => ({
 
         const pData = node.data as ProcessNodeData;
         const capacityProfile = nodeCapacityProfiles.get(node.id);
-        const capacityLimit = Math.max(
-          0,
-          capacityProfile?.maxConcurrentItems ?? getLocalCapacityUnits(pData.resources),
-        );
-        if (capacityLimit <= 0) continue;
+        const peopleCapacityLimit = getNodePeopleCapacityLimit(pData, capacityProfile);
+        const capacityLimit = getEffectiveNodeCapacityLimit(pData, capacityProfile, assetPools);
+        if (peopleCapacityLimit <= 0 || capacityLimit <= 0) continue;
         const isWorking = workingStatus.get(node.id) ?? true;
         if (!isWorking) continue;
+        const assetPool = getAssetPoolById(assetPools, pData.assetPoolId);
 
         const configuredBatchSize = node.type === 'processNode' ? getNodeBatchSize(pData) : 0;
         const batchSize =
@@ -3014,7 +3167,14 @@ export const useStore = create<SimulationState>((set, get) => ({
             : 1;
 
         let currentLoad = processingCounts.get(node.id) || 0;
-        while (queueItems.length >= batchSize && currentLoad + batchSize <= capacityLimit) {
+        let availableAssetUnits = assetPool
+          ? Math.max(0, assetPool.units - (equipmentUsageByPool.get(assetPool.id) || 0))
+          : Infinity;
+        while (
+          queueItems.length >= batchSize &&
+          currentLoad + batchSize <= peopleCapacityLimit &&
+          availableAssetUnits >= batchSize
+        ) {
           const usesSharedBudget = capacityProfile?.usesSharedAllocation ?? false;
           const actualTime =
             pData.processingTime === 0
@@ -3046,6 +3206,10 @@ export const useStore = create<SimulationState>((set, get) => ({
           const batch = queueItems.splice(0, batchSize);
           currentLoad += batchSize;
           processingCounts.set(node.id, currentLoad);
+          if (assetPool) {
+            equipmentUsageByPool.set(assetPool.id, (equipmentUsageByPool.get(assetPool.id) || 0) + batchSize);
+            availableAssetUnits = Math.max(0, availableAssetUnits - batchSize);
+          }
 
           if (usesSharedBudget) {
             const budgetState = nextSharedNodeBudgetStateByNode[node.id]!;
@@ -3107,7 +3271,7 @@ export const useStore = create<SimulationState>((set, get) => ({
           0,
           usesSharedBudget
             ? capacityProfile?.availableCapacityPerTick ?? 0
-            : getLocalCapacityUnits((node.data as ProcessNodeData).resources || 0),
+            : getEffectiveNodeCapacityLimit(node.data as ProcessNodeData, capacityProfile, assetPools),
         );
         const busyResourceTicks = usesSharedBudget
           ? Math.max(0, reservedBudgetMinutesThisTickByNode.get(node.id) || 0)

@@ -2,10 +2,18 @@ import React, { memo, useRef } from 'react';
 import { Handle, Position, NodeProps, useStore as useReactFlowStore } from 'reactflow';
 import { ProcessNodeData, ItemStatus, getTimeUnitAbbrev, ProcessItem } from '../types';
 import { useStore } from '../store';
-import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2, Gauge } from 'lucide-react';
+import { Users, Clock, AlertTriangle, Zap, User, Box, FileText, Trash2, Gauge, Wrench } from 'lucide-react';
 import { horizontalHandlePosition } from './nodeHandleLayout';
 import { computeNodeUtilization, getRollingNodeUtilization } from '../metrics';
-import { computeBudgetUtilization, getLocalCapacityUnits, getNodeCapacityProfile, getNodeSharedBudgetSummary, getResourcePools } from '../capacityModel';
+import {
+  computeBudgetUtilization,
+  getAssetPoolById,
+  getEffectiveNodeCapacityLimit,
+  getNodeCapacityProfile,
+  getNodePeopleCapacityLimit,
+  getNodeSharedBudgetSummary,
+  getResourcePools,
+} from '../capacityModel';
 import { RESOURCE_POOL_COLOR_THEMES } from '../resourcePoolVisuals';
 import ResourcePoolAvatar from './ResourcePoolAvatar';
 
@@ -22,6 +30,7 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
   const resourcePools = useStore((state) => state.resourcePools);
+  const assetPools = useStore((state) => state.assetPools);
   const blockedInboundCount = useStore((state) => state.blockedCountsByTarget.get(id) || 0);
   const sharedNodeBudgetStateByNode = useStore((state) => state.sharedNodeBudgetStateByNode);
   const rollingUtilization = useStore((state) => getRollingNodeUtilization(state.nodeUtilizationHistoryByNode, id));
@@ -55,10 +64,9 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
     if (!activeHandle) return 'source';
     return activeHandle.type === 'source' ? 'target' : 'source';
   });
-  const displayCapacity = Math.max(
-    0,
-    usesSharedAllocation ? capacityProfile?.maxConcurrentItems ?? 0 : getLocalCapacityUnits(data.resources || 0),
-  );
+  const peopleCapacity = getNodePeopleCapacityLimit(data, capacityProfile);
+  const assetPool = getAssetPoolById(assetPools, data.assetPoolId);
+  const displayCapacity = Math.max(0, getEffectiveNodeCapacityLimit(data, capacityProfile, assetPools));
   const sharedBudgetSummary = getNodeSharedBudgetSummary(id, capacityProfile, sharedNodeBudgetStateByNode);
   const showBudgetExhaustedWarning =
     usesSharedAllocation &&
@@ -102,6 +110,10 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
   );
   const activeCount = totalQueuedCount + processingItems.length;
   const avgWaitTime = activeCount > 0 ? waitTimeSum / activeCount : 0;
+  const capacityPressureCount = blockedInboundCount > 0 ? activeCount : processingItems.length;
+  const staffBlocked = !data.validationError && peopleCapacity > 0 && capacityPressureCount >= peopleCapacity;
+  const equipmentBlocked =
+    !data.validationError && assetPool !== null && assetPool.units > 0 && capacityPressureCount >= assetPool.units;
   const showQueueCapacityWarning =
     !data.validationError &&
     localQueuedItems.length > 0 &&
@@ -112,13 +124,21 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
     showBudgetExhaustedWarning || showQueueCapacityWarning || showBlockedInboundWarning;
   const runtimeCapacityWarningTitle = showBudgetExhaustedWarning
     ? 'Daily shared capacity is used up. New items wait until the next working day.'
-    : showBlockedInboundWarning
-      ? 'Incoming items are blocked because this node cannot accept more work right now.'
-      : 'Node is at capacity. Queued items are waiting for a free slot.';
+    : staffBlocked && equipmentBlocked
+      ? showBlockedInboundWarning
+        ? 'Incoming items are blocked because this node is waiting for available staff and equipment.'
+        : 'Node is waiting for available staff and equipment.'
+      : equipmentBlocked
+        ? showBlockedInboundWarning
+          ? 'Incoming items are blocked because this node is waiting for available equipment.'
+          : 'Node is waiting for available equipment.'
+        : showBlockedInboundWarning
+          ? 'Incoming items are blocked because this node is waiting for available staff.'
+          : 'Node is waiting for available staff.';
   const liveUtilization =
     usesSharedAllocation && capacityProfile
       ? computeBudgetUtilization(sharedBudgetSummary.consumedBudgetMinutes, sharedBudgetSummary.dailyBudgetMinutes)
-      : computeNodeUtilization(items, data.resources);
+      : computeNodeUtilization(items, displayCapacity);
 
   const formatWaitTime = (ticks: number) => {
     if (ticks <= 0) return '0m';
@@ -330,15 +350,23 @@ const ProcessNode = ({ id, data, selected }: NodeProps<ProcessNodeData>) => {
                         <span className="text-slate-300">·</span>
                         <span
                           className="inline-flex items-center gap-1 whitespace-nowrap"
-                          title={usesSharedAllocation ? 'Shared team allocation for this node' : 'Resources'}
+                          title="People capacity limit"
                         >
                           <Users size={11} className="text-slate-400 shrink-0" />
-                          <span className="tabular-nums">
-                            {usesSharedAllocation
-                              ? `${(capacityProfile?.allocationPercent ?? 0).toFixed(0)}%`
-                              : data.resources}
-                          </span>
+                          <span className="tabular-nums">{peopleCapacity}</span>
                         </span>
+                        {assetPool ? (
+                          <>
+                            <span className="text-slate-300">/</span>
+                            <span
+                              className="inline-flex items-center gap-1 whitespace-nowrap"
+                              title={`${assetPool.name} equipment units`}
+                            >
+                              <Wrench size={11} className="text-slate-400 shrink-0" />
+                              <span className="tabular-nums">{assetPool.units}</span>
+                            </span>
+                          </>
+                        ) : null}
                         <span className="text-slate-300">·</span>
                         <span className="inline-flex items-center gap-1 whitespace-nowrap" title="Average wait time">
                           <Clock size={11} className="text-amber-500 shrink-0" />

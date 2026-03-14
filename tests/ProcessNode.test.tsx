@@ -145,7 +145,146 @@ describe('ProcessNode shared budget warning', () => {
     );
 
     expect(
-      screen.getByTitle('Incoming items are blocked because this node cannot accept more work right now.'),
+      screen.getByTitle('Incoming items are blocked because this node is waiting for available staff.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows both people and equipment limits when an equipment pool is configured', () => {
+    const node = {
+      id: 'proc-1',
+      type: 'processNode' as const,
+      position: { x: 0, y: 0 },
+      data: {
+        label: 'Styling',
+        processingTime: 30,
+        resources: 6,
+        quality: 1,
+        variability: 0,
+        stats: { processed: 0, failed: 0, maxQueue: 0 },
+        routingWeights: {},
+        assetPoolId: 'chairs',
+      },
+    };
+
+    resetUiStore({
+      nodes: [node] as any,
+      assetPools: [{ id: 'chairs', name: 'Chairs', units: 4 }],
+    });
+
+    render(
+      <ProcessNode
+        id={node.id}
+        data={node.data as any}
+        type={node.type}
+        selected={false}
+        isConnectable
+        xPos={0}
+        yPos={0}
+        zIndex={0}
+        dragging={false}
+      />,
+    );
+
+    expect(screen.getByTitle('People capacity limit')).toHaveTextContent('6');
+    expect(screen.getByTitle('Chairs equipment units')).toHaveTextContent('4');
+    expect(screen.getByText('0/4')).toBeInTheDocument();
+  });
+
+  it('shows an equipment-specific warning when equipment is the blocking constraint', () => {
+    const node = {
+      id: 'proc-1',
+      type: 'processNode' as const,
+      position: { x: 0, y: 0 },
+      data: {
+        label: 'Styling',
+        processingTime: 30,
+        resources: 4,
+        quality: 1,
+        variability: 0,
+        stats: { processed: 0, failed: 0, maxQueue: 0 },
+        routingWeights: {},
+        assetPoolId: 'chairs',
+      },
+    };
+    const items = [
+      {
+        id: 'item-1',
+        currentNodeId: 'proc-1',
+        status: 'PROCESSING',
+        handoffTargetNodeId: null,
+        progress: 50,
+        remainingTime: 10,
+        processingDuration: 20,
+        totalTime: 20,
+        nodeEnterTick: 0,
+        metricsEpoch: 0,
+        spawnTick: 0,
+        completionTick: null,
+        terminalNodeId: null,
+        timeActive: 10,
+        timeWaiting: 0,
+        nodeLeadTime: 10,
+      },
+      {
+        id: 'item-2',
+        currentNodeId: 'proc-1',
+        status: 'PROCESSING',
+        handoffTargetNodeId: null,
+        progress: 50,
+        remainingTime: 10,
+        processingDuration: 20,
+        totalTime: 20,
+        nodeEnterTick: 0,
+        metricsEpoch: 0,
+        spawnTick: 0,
+        completionTick: null,
+        terminalNodeId: null,
+        timeActive: 10,
+        timeWaiting: 0,
+        nodeLeadTime: 10,
+      },
+      {
+        id: 'item-3',
+        currentNodeId: 'proc-1',
+        status: 'QUEUED',
+        handoffTargetNodeId: null,
+        progress: 0,
+        remainingTime: 0,
+        processingDuration: 0,
+        totalTime: 0,
+        nodeEnterTick: 5,
+        metricsEpoch: 0,
+        spawnTick: 5,
+        completionTick: null,
+        terminalNodeId: null,
+        timeActive: 0,
+        timeWaiting: 5,
+        nodeLeadTime: 5,
+      },
+    ] as any;
+
+    resetUiStore({
+      nodes: [node] as any,
+      assetPools: [{ id: 'chairs', name: 'Chairs', units: 2 }],
+      itemsByNode: new Map([['proc-1', items]]),
+    });
+
+    render(
+      <ProcessNode
+        id={node.id}
+        data={node.data as any}
+        type={node.type}
+        selected={false}
+        isConnectable
+        xPos={0}
+        yPos={0}
+        zIndex={0}
+        dragging={false}
+      />,
+    );
+
+    expect(
+      screen.getByTitle('Node is waiting for available equipment.'),
     ).toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { X, HelpCircle, Split, Zap, Trash2, RotateCcw, ChevronDown } from 'lucide-react';
+import { X, HelpCircle, Split, Zap, Trash2, RotateCcw, ChevronDown, Wrench } from 'lucide-react';
 import {
   getTimeUnitAbbrev,
   ProcessNodeData,
@@ -10,10 +10,13 @@ import {
   WorkingHoursConfig,
 } from '../types';
 import {
+  getAssetPoolById,
+  getAssetPools,
   clampAllocationPercent,
+  getEffectiveNodeCapacityLimit,
   getEstimatedItemsPerDay,
-  getLocalCapacityUnits,
   getNodeCapacityProfile,
+  getNodePeopleCapacityLimit,
   getNodeSharedBudgetSummary,
   getResourcePools,
   getSharedAllocationTotals,
@@ -91,6 +94,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
   const sharedCapacityInputMode = useStore((state) => state.sharedCapacityInputMode);
   const sharedCapacityValue = useStore((state) => state.sharedCapacityValue);
   const resourcePools = useStore((state) => state.resourcePools);
+  const assetPools = useStore((state) => state.assetPools);
   const sharedNodeBudgetStateByNode = useStore((state) => state.sharedNodeBudgetStateByNode);
   const unitAbbrev = getTimeUnitAbbrev(timeUnit);
 
@@ -120,17 +124,17 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
     () => getResourcePools({ resourcePools, sharedCapacityInputMode, sharedCapacityValue }),
     [resourcePools, sharedCapacityInputMode, sharedCapacityValue],
   );
+  const normalizedAssetPools = useMemo(() => getAssetPools(assetPools), [assetPools]);
   const selectedResourcePoolId = capacityProfile.resourcePoolId || normalizedResourcePools[0]?.id || '';
   const selectedResourcePool = normalizedResourcePools.find((pool) => pool.id === selectedResourcePoolId) || normalizedResourcePools[0];
+  const selectedAssetPool = getAssetPoolById(assetPools, data.assetPoolId);
+  const peopleCapacityLimit = getNodePeopleCapacityLimit(data, capacityProfile);
   const allocationTotals = useMemo(
     () => getSharedAllocationTotals(nodes as any, { capacityMode, sharedCapacityInputMode, sharedCapacityValue, resourcePools }, selectedResourcePoolId),
     [capacityMode, nodes, resourcePools, selectedResourcePoolId, sharedCapacityInputMode, sharedCapacityValue],
   );
   const isSharedAllocationNode = capacityProfile.usesSharedAllocation && (isStartNode || isStandardNode);
-  const derivedCapacityLimit = Math.max(
-    0,
-    capacityProfile.usesSharedAllocation ? capacityProfile.maxConcurrentItems : getLocalCapacityUnits(data.resources || 0),
-  );
+  const derivedCapacityLimit = Math.max(0, getEffectiveNodeCapacityLimit(data, capacityProfile, assetPools));
   const sharedBudgetSummary = useMemo(
     () => getNodeSharedBudgetSummary(node.id, capacityProfile, sharedNodeBudgetStateByNode),
     [capacityProfile, node.id, sharedNodeBudgetStateByNode],
@@ -151,7 +155,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
 
   const sourceConfig = data.sourceConfig || { enabled: false, interval: 20, batchSize: 1 };
   const flowMode = data.flowMode === 'pull' ? 'pull' : 'push';
-  const maxBatchSize = Math.max(1, data.resources || 1);
+  const maxBatchSize = Math.max(1, derivedCapacityLimit || 1);
   const batchSizeRaw = Number(data.batchSize);
   const batchingEnabled = Number.isFinite(batchSizeRaw) && batchSizeRaw > 1;
   const batchSize = Math.min(
@@ -377,7 +381,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
         {!isEndNode && (
           <div>
             <div className="flex justify-between items-center mb-2">
-              <SectionLabel>{isSharedAllocationNode ? 'Concurrent Capacity' : 'Capacity (Resources)'}</SectionLabel>
+              <SectionLabel>{isSharedAllocationNode ? 'People Capacity' : 'People / Staff'}</SectionLabel>
               <span className="text-[10px] font-bold text-slate-400 font-mono">{data.resources}</span>
             </div>
             <input
@@ -388,9 +392,63 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ nodeId, onClose }) => {
               value={data.resources}
               onChange={(e) => handleChange('resources', Math.max(0, parseInt(e.target.value || '0', 10)))}
             />
-            {isSharedAllocationNode && (
-              <p className="mt-1 text-[10px] text-slate-500">Sets the base active-slot cap. Shared allocation can raise the effective cap when the daily budget supports more parallel work.</p>
+            <p className="mt-1 text-[10px] text-slate-500">
+              {isSharedAllocationNode
+                ? 'Sets the people-side active-slot cap. Shared allocation still controls the daily team budget.'
+                : 'Sets the people/staff limit for this step.'}
+            </p>
+            {selectedAssetPool && (
+              <p className="mt-1 text-[10px] text-slate-500">
+                Equipment on this node lowers the effective active cap to {derivedCapacityLimit}.
+              </p>
             )}
+          </div>
+        )}
+
+        {/* Stations / Assets */}
+        {!isEndNode && (
+          <div className="rounded-xl border-2 border-slate-900 p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <Wrench size={12} className="text-amber-600" />
+              <span className="text-[10px] font-black uppercase tracking-[0.1em] text-slate-700">Stations / Assets</span>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-bold text-slate-400 mb-1">Equipment Pool</div>
+              <div className="relative">
+                <select
+                  className={`${inputClass} appearance-none pr-7 cursor-pointer`}
+                  value={selectedAssetPool?.id || ''}
+                  onChange={(e) => handleChange('assetPoolId', e.target.value || undefined)}
+                >
+                  <option value="">None</option>
+                  {normalizedAssetPools.map((pool) => (
+                    <option key={pool.id} value={pool.id}>{pool.name}</option>
+                  ))}
+                </select>
+                <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              </div>
+              <p className="mt-1 text-[10px] text-slate-500">
+                Leave blank if this step does not need a station or asset.
+              </p>
+            </div>
+
+            {selectedAssetPool ? (
+              <div className="grid grid-cols-3 gap-1.5">
+                <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
+                  <div className="text-[8px] font-bold uppercase text-slate-400">People</div>
+                  <div className="text-[11px] font-black text-slate-700 font-mono">{peopleCapacityLimit}</div>
+                </div>
+                <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
+                  <div className="text-[8px] font-bold uppercase text-slate-400">Equipment</div>
+                  <div className="text-[11px] font-black text-slate-700 font-mono">{selectedAssetPool.units}</div>
+                </div>
+                <div className="rounded-lg border-2 border-slate-900 bg-white px-1.5 py-1 text-center">
+                  <div className="text-[8px] font-bold uppercase text-slate-400">Effective</div>
+                  <div className="text-[11px] font-black text-slate-700 font-mono">{derivedCapacityLimit}</div>
+                </div>
+              </div>
+            ) : null}
           </div>
         )}
 

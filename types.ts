@@ -64,6 +64,12 @@ export interface ResourcePool {
   colorId?: ResourcePoolColorId;
 }
 
+export interface AssetPool {
+  id: string;
+  name: string;
+  units: number;
+}
+
 export const DEFAULT_WORKING_HOURS: WorkingHoursConfig = {
   enabled: true,
   hoursPerDay: 8,
@@ -76,6 +82,7 @@ export interface ProcessNodeData {
   resources: number; // Concurrent capacity
   allocationPercent?: number; // Share of the selected shared pool used by this node when shared allocation mode is enabled
   resourcePoolId?: string; // Shared resource pool this node draws from when shared allocation mode is enabled
+  assetPoolId?: string; // Optional shared equipment/station pool. Unset = unlimited equipment.
   batchSize?: number; // Items that must begin together when this node batches work
   flowMode?: FlowMode; // Push accepts immediately; pull caps local WIP at resources and blocks upstream overflow
   pullOpenSlotsRequired?: number; // Legacy saved setting retained for compatibility; pull now uses resource count as its cap
@@ -413,6 +420,7 @@ export interface CanvasFlowData {
   sharedCapacityInputMode: SharedCapacityInputMode;
   sharedCapacityValue: number;
   resourcePools: ResourcePool[];
+  assetPools: AssetPool[];
   simulationSeed: number;
   kpiTargets: KpiTargets;
 }
@@ -501,6 +509,7 @@ export interface SimulationState {
   sharedCapacityInputMode: SharedCapacityInputMode;
   sharedCapacityValue: number;
   resourcePools: ResourcePool[];
+  assetPools: AssetPool[];
 
   // Real-time simulation configuration
   durationPreset: string; // Key for DURATION_PRESETS
@@ -549,6 +558,9 @@ export interface SimulationState {
   addResourcePool: () => void;
   updateResourcePool: (id: string, patch: Partial<ResourcePool>) => void;
   deleteResourcePool: (id: string) => void;
+  addAssetPool: () => void;
+  updateAssetPool: (id: string, patch: Partial<AssetPool>) => void;
+  deleteAssetPool: (id: string) => void;
   setDurationPreset: (preset: string) => void;
   setSpeedPreset: (preset: string) => void;
   setAutoStop: (enabled: boolean) => void;

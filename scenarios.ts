@@ -1,5 +1,6 @@
 import { Edge, MarkerType } from 'reactflow';
 import {
+  AssetPool,
   AppNode,
   CapacityMode,
   DemandMode,
@@ -18,6 +19,7 @@ export interface ScenarioDefinition {
   sharedCapacityInputMode?: SharedCapacityInputMode;
   sharedCapacityValue?: number;
   resourcePools?: ResourcePool[];
+  assetPools?: AssetPool[];
 }
 
 export const SCENARIOS: Record<string, ScenarioDefinition> = {

@@ -16,6 +16,7 @@ export const resetUiStore = (overrides: PartialStoreState = {}) => {
     nodeStageMetricsHistoryByNode: {},
     nodeUtilizationHistoryByNode: {},
     items: [],
+    assetPools: [],
     itemCounts: {
       wip: 0,
       completed: 0,

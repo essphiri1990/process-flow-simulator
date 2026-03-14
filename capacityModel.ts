@@ -1,4 +1,5 @@
 import {
+  AssetPool,
   AppNode,
   CapacityMode,
   ItemStatus,
@@ -17,6 +18,7 @@ export const DEFAULT_SHARED_CAPACITY_INPUT_MODE: SharedCapacityInputMode = 'fte'
 export const DEFAULT_SHARED_CAPACITY_VALUE = 3;
 export const DEFAULT_RESOURCE_POOL_ID = 'default-shared-pool';
 export const DEFAULT_RESOURCE_POOL_NAME = 'Shared Team';
+export const DEFAULT_ASSET_POOL_UNITS = 1;
 
 export interface SharedCapacitySettings {
   capacityMode: CapacityMode;
@@ -91,6 +93,11 @@ const normalizePoolName = (name: string | undefined, fallback: string): string =
   return trimmed || fallback;
 };
 
+const normalizeAssetPoolName = (name: string | undefined, fallback: string): string => {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  return trimmed || fallback;
+};
+
 export const createDefaultResourcePool = (
   inputMode: SharedCapacityInputMode = DEFAULT_SHARED_CAPACITY_INPUT_MODE,
   capacityValue: number = DEFAULT_SHARED_CAPACITY_VALUE,
@@ -105,6 +112,67 @@ export const createDefaultResourcePool = (
 
 export const getResourcePoolHoursPerDay = (pool: ResourcePool): number =>
   getTotalSharedCapacityHoursPerDay(pool.inputMode, pool.capacityValue);
+
+export const getAssetPools = (assetPools?: AssetPool[]): AssetPool[] => {
+  const rawPools = Array.isArray(assetPools) ? assetPools : [];
+  const normalizedPools: AssetPool[] = [];
+  const seenIds = new Set<string>();
+
+  for (const [index, pool] of rawPools.entries()) {
+    const id =
+      typeof pool?.id === 'string' && pool.id.trim()
+        ? pool.id.trim()
+        : `asset-pool-${index + 1}`;
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+    normalizedPools.push({
+      id,
+      name: normalizeAssetPoolName(pool?.name, `Equipment ${index + 1}`),
+      units: Number.isFinite(pool?.units) ? Math.max(0, Math.round(Number(pool.units))) : 0,
+    });
+  }
+
+  return normalizedPools;
+};
+
+export const getAssetPoolById = (
+  assetPools?: AssetPool[],
+  assetPoolId?: string | null,
+): AssetPool | null => {
+  const pools = getAssetPools(assetPools);
+  const preferredId = typeof assetPoolId === 'string' ? assetPoolId.trim() : '';
+  if (!preferredId) return null;
+  return pools.find((pool) => pool.id === preferredId) || null;
+};
+
+export const getNodeAssetPoolId = (
+  nodeData: Partial<ProcessNodeData> | undefined,
+  assetPools?: AssetPool[],
+): string | undefined => getAssetPoolById(assetPools, nodeData?.assetPoolId)?.id;
+
+export const getNodeAssetUnits = (
+  nodeData: Partial<ProcessNodeData> | undefined,
+  assetPools?: AssetPool[],
+): number | null => {
+  const pool = getAssetPoolById(assetPools, nodeData?.assetPoolId);
+  return pool ? pool.units : null;
+};
+
+export const getNodePeopleCapacityLimit = (
+  nodeData: Partial<ProcessNodeData> | undefined,
+  capacityProfile: NodeCapacityProfile | null | undefined,
+): number =>
+  Math.max(0, capacityProfile?.maxConcurrentItems ?? getLocalCapacityUnits(nodeData?.resources || 0));
+
+export const getEffectiveNodeCapacityLimit = (
+  nodeData: Partial<ProcessNodeData> | undefined,
+  capacityProfile: NodeCapacityProfile | null | undefined,
+  assetPools?: AssetPool[],
+): number => {
+  const peopleCapacity = getNodePeopleCapacityLimit(nodeData, capacityProfile);
+  const assetUnits = getNodeAssetUnits(nodeData, assetPools);
+  return assetUnits === null ? peopleCapacity : Math.min(peopleCapacity, assetUnits);
+};
 
 export const getResourcePools = (
   settings: Pick<SharedCapacitySettings, 'resourcePools' | 'sharedCapacityInputMode' | 'sharedCapacityValue'>,
